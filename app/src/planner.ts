@@ -306,7 +306,12 @@ export async function mountPlanner(root: HTMLElement, onBack: () => void, notify
             <li>Take off from inside or near the area. Keep the drone <b>in sight</b> and the controller connected —
                 on the Mavic Air 2, Litchi steers from your phone and the mission stops if the signal drops.</li>
             <li><b>Don't rely on obstacle sensors</b> during the mission. Fly well above trees, towers and power lines.</li>
-            <li>Fly the missions in order (numbered on the map), then drop all the photos into a new project.</li>
+            <li>Each mission is sized to fit one battery. Swap batteries <b>between</b> missions, then fly the next
+                numbered one.</li>
+            <li>If a battery runs low part-way, let it return home, note the <b>last waypoint it reached</b>, swap
+                the battery, reopen the same mission and choose <b>start from waypoint</b> — that number + 1.
+                Litchi for the Mavic Air 2 doesn't resume automatically.</li>
+            <li>Then drop all the photos into a new project.</li>
           </ol>
         </details>
       </section>`;

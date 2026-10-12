@@ -58,6 +58,10 @@ Local-first drone-photo stitcher. Read README.md first.
 - The stitcher **skips oblique photos** (DJI XMP gimbal pitch > −75°,
   `OBLIQUE_PITCH_DEG`): they're for 3D and would smear the 2D map. Photos with
   no pitch metadata are kept.
+- **Battery swaps:** Litchi for DJI (Mini 2 and older, incl. the Air 2) has no
+  automatic resume — the pilot restarts a mission with "start from waypoint".
+  So missions are split to fit ONE battery each, at line boundaries, and the
+  checklist tells the pilot how to restart mid-mission.
 - 99 waypoints per Litchi mission → plans split; `batteries` packs short
   missions onto one battery in order. Don't conflate missions with batteries.
 - Obstacle avoidance during Litchi missions is unconfirmed (forum reports
