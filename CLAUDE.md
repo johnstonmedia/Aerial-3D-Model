@@ -96,6 +96,11 @@ Local-first drone-photo stitcher. Read README.md first.
   photo at a time (each uses every core) and are cached; fusion keeps depths
   confirmed by ≥2 neighbouring depth maps (≥1 if fewer than 3 neighbours) and
   voxelises to fit the profile's point budget.
+- Measured on Aukerman (77 × 18 MP, Standard, 4-core sandbox): 4.27 M points,
+  0.22 m voxel, peak RSS 783 MB, 17.5 min (almost all PatchMatch).
+- The viewer loads `view.ply` (≤ 1.5 M points, strided from dense.ply);
+  "Export point cloud" copies the full `dense. py`. 4 M points was too slow to
+  load in a software-GL test browser — integrated GPUs deserve the same care.
 
 ## App notes (app/)
 - Tiles reach the webview through a custom `tiles://` protocol (served as

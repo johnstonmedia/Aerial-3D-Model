@@ -476,7 +476,7 @@ fn serve_tile(app: &AppHandle, uri_path: &str) -> tauri::http::Response<Vec<u8>>
     let Some(dir) = app.state::<AppState>().current.lock().unwrap().clone() else { return not_found() };
     let parts: Vec<&str> = uri_path.trim_start_matches('/').split('/').collect();
     if let ["3d", name] = parts[..] {
-        if !matches!(name, "dense.ply" | "sparse.ply") {
+        if !matches!(name, "view.ply" | "dense.ply" | "sparse.ply") {
             return not_found();
         }
         return match std::fs::read(dir.join("result").join("3d").join(name)) {

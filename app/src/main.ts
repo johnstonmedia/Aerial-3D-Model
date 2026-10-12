@@ -336,7 +336,8 @@ function mount3d(p: ProjectView) {
   const el = document.getElementById("view3d");
   const m3 = p.model3d!;
   if (!el) return;
-  const file = m3.points ? "dense.ply" : "sparse.ply";
+  // The viewer loads a lighter copy; "Export point cloud" saves the full one.
+  const file = m3.points ? "view.ply" : "sparse.ply";
   const status = document.getElementById("v3d-status");
   viewer = mountViewer3D(el, `${tileBase()}3d/${file}?v=${m3.version}`, (t) => {
     if (status) status.textContent = t;

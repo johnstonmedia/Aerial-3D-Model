@@ -38,6 +38,9 @@ pub fn origin_comment(s: &sparse::Sparse) -> String {
     )
 }
 
+/// Points in the viewer's copy of the dense cloud.
+pub const VIEW_MAX_POINTS: usize = 1_500_000;
+
 /// Loads the sparse result written by [`run_sparse`].
 pub fn load_sparse(project: &Project) -> Result<sparse::Sparse> {
     Ok(serde_json::from_slice(&std::fs::read(out_dir(project).join("cameras.json"))?)?)
@@ -49,6 +52,13 @@ pub fn run_dense(project: &Project, ctx: &Ctx) -> Result<(usize, f64)> {
     let profile = crate::pipeline::effective_profile(project);
     let pool = rayon::ThreadPoolBuilder::new().num_threads(profile.threads).build()?;
     let cloud = pool.install(|| dense::reconstruct_dense(project, &s, &profile, ctx))?;
-    ply::write_ply(&out_dir(project).join("dense.ply"), &cloud.points, &cloud.colors, &origin_comment(&s))?;
+    let dir = out_dir(project);
+    ply::write_ply(&dir.join("dense.ply"), &cloud.points, &cloud.colors, &origin_comment(&s))?;
+    // A lighter copy for the in-app viewer: a few million points is fine to
+    // export but slow to load and orbit on an integrated GPU.
+    let step = cloud.points.len().div_ceil(VIEW_MAX_POINTS).max(1);
+    let vp: Vec<[f32; 3]> = cloud.points.iter().step_by(step).copied().collect();
+    let vc: Vec<[u8; 3]> = cloud.colors.iter().step_by(step).copied().collect();
+    ply::write_ply(&dir.join("view.ply"), &vp, &vc, &origin_comment(&s))?;
     Ok((cloud.points.len(), cloud.voxel_m))
 }
