@@ -3,6 +3,7 @@
 //! tree sides their shape.
 
 pub mod ba;
+pub mod dense;
 pub mod geometry;
 pub mod ply;
 pub mod sparse;
@@ -35,4 +36,19 @@ pub fn origin_comment(s: &sparse::Sparse) -> String {
         s.origin_n,
         s.height_ref
     )
+}
+
+/// Loads the sparse result written by [`run_sparse`].
+pub fn load_sparse(project: &Project) -> Result<sparse::Sparse> {
+    Ok(serde_json::from_slice(&std::fs::read(out_dir(project).join("cameras.json"))?)?)
+}
+
+/// Dense point cloud from an existing sparse result; writes `dense.ply`.
+pub fn run_dense(project: &Project, ctx: &Ctx) -> Result<(usize, f64)> {
+    let s = load_sparse(project)?;
+    let profile = crate::pipeline::effective_profile(project);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(profile.threads).build()?;
+    let cloud = pool.install(|| dense::reconstruct_dense(project, &s, &profile, ctx))?;
+    ply::write_ply(&out_dir(project).join("dense.ply"), &cloud.points, &cloud.colors, &origin_comment(&s))?;
+    Ok((cloud.points.len(), cloud.voxel_m))
 }

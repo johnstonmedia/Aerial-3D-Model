@@ -57,6 +57,12 @@ fn main() -> Result<()> {
                 s.intrinsics[0].f, s.intrinsics[0].k1, s.intrinsics[0].k2, t.elapsed().as_secs_f64()
             );
         }
+        Some("dense") if args.len() >= 2 => {
+            let project = Project::open(&PathBuf::from(&args[1]))?;
+            let t = std::time::Instant::now();
+            let (n, voxel) = stitch_core::recon::run_dense(&project, &ctx)?;
+            println!("dense points={n} voxel={voxel:.3}m took {:.1}s", t.elapsed().as_secs_f64());
+        }
         Some("plan") => {
             // Reads a PlanInput as JSON on stdin, prints the Plan as JSON;
             // with an output folder, also writes the Litchi CSVs and KML.

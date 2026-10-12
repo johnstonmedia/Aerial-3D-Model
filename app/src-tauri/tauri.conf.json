@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: tiles: http://tiles.localhost https://server.arcgisonline.com https://tile.openstreetmap.org; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; img-src 'self' data: tiles: http://tiles.localhost https://server.arcgisonline.com https://tile.openstreetmap.org; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost tiles: http://tiles.localhost"
     }
   },
   "bundle": {

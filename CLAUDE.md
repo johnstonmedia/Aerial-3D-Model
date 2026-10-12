@@ -67,6 +67,32 @@ Local-first drone-photo stitcher. Read README.md first.
 - Basemaps (Esri World Imagery, OSM) need internet and are in the CSP;
   everything else in the planner works offline (KML import, plan, export).
 
+## 3D reconstruction (crates/stitch-core/src/recon/)
+- Pipeline: `sparse.rs` (GPS-aided SfM) → `dense.rs` (PatchMatch depth maps
+  + consistency fusion) → `result/3d/{cameras.json,sparse.ply,dense.ply}`.
+  Uses ALL photos, obliques included (the 2D map skips them).
+- World frame: local ENU metres; origin UTM E/N in cameras.json and as a PLY
+  comment. Heights are relative to take-off when every photo has DJI
+  RelativeAltitude, else EXIF GPS altitude.
+- Initial poses: GPS + DJI gimbal yaw/pitch; nadir photos with no gimbal data
+  take yaw from the 2D solve (`yaw = −angle of the 2D similarity`).
+- ⚠️ **The first BA round must be loose (200 working px).** Metadata misses the
+  few degrees of in-flight tilt (~300 px at 100 m). A tight first threshold
+  threw away most genuine matches and left a "floppy" block with the ground
+  split into layers. Measured on Aukerman: 2.1 views/point and 935 stray
+  points before; 3.6 views/point and 5 stray points after.
+- ⚠️ After round 2, `pair_fits` drops photo pairs whose matches don't fit the
+  camera geometry — repetitive grass fools F-RANSAC between photos that don't
+  overlap, leaving 2-view points far below ground.
+- 3D uses its own feature set (`profile_3d`: more keypoints, larger working
+  size) — the 2D map's features were too sparse for good tracks.
+- Nadir-only surveys can't separate focal length from flying height (both
+  scale the image); obliques fix it. The BA test allows 2.5% for that reason.
+- Dense: working size 640/960/1400 px (Lite/Standard/High); depth maps run one
+  photo at a time (each uses every core) and are cached; fusion keeps depths
+  confirmed by ≥2 neighbouring depth maps (≥1 if fewer than 3 neighbours) and
+  voxelises to fit the profile's point budget.
+
 ## App notes (app/)
 - Tiles reach the webview through a custom `tiles://` protocol (served as
   `http://tiles.localhost/` on Windows) reading the open project's folder — no

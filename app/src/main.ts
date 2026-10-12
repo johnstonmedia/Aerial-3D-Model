@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { mountPlanner } from "./planner";
+import { mountViewer3D, Viewer3D } from "./viewer3d";
 import {
   api,
   ExportFormat,
@@ -22,12 +23,14 @@ const state: {
   sys: SystemInfo | null;
   project: ProjectView | null;
   recent: RecentProject[];
-  busy: "process" | "export" | null;
+  busy: "process" | "export" | "3d" | null;
+  tab: "map" | "3d";
   progress: Progress | null;
   notice: { kind: "ok" | "error" | "info"; text: string } | null;
-} = { sys: null, project: null, recent: [], busy: null, progress: null, notice: null };
+} = { sys: null, project: null, recent: [], busy: null, tab: "map", progress: null, notice: null };
 
 let map: L.Map | null = null;
+let viewer: Viewer3D | null = null;
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -39,6 +42,13 @@ const STAGES: Record<string, string> = {
   render: "Drawing the map",
   pyramid: "Building zoom levels",
   export: "Exporting",
+  matching3d: "Matching photos in 3D",
+  tracks: "Linking matches",
+  bundle: "Refining cameras",
+  colour: "Colouring points",
+  "dense-prep": "Preparing photos for depth",
+  depth: "Computing depth",
+  fuse: "Building the point cloud",
   done: "Finished",
 };
 
@@ -191,6 +201,8 @@ function runPanel(p: ProjectView) {
            </div>`
         : `<button class="primary wide" data-action="process" ${p.photos.length < 2 ? "disabled" : ""}>
              ${p.manifest ? "Re-process" : "Stitch photos"}</button>
+           <button class="wide" data-action="build3d" ${p.photos.length < 3 ? "disabled" : ""}>
+             ${p.model3d?.points ? "Rebuild 3D model" : "Build 3D model"}</button>
            ${
              p.manifest
                ? `<button class="wide" data-action="export">Export map…</button>`
@@ -217,21 +229,52 @@ function projectView(p: ProjectView) {
       ${settingsPanel(p)}
     </aside>
     <main>
-      ${
-        m
-          ? `<div id="map"></div>
-             <div class="map-info">
-               ${fmtPixels(m.width, m.height)} · ${fmtGsd(m.gsd, m.epsg != null)} · ${m.photos} photos
-               ${m.epsg ? ` · EPSG:${m.epsg}` : " · not georeferenced"}
-               <span id="cursor"></span>
-             </div>`
-          : `<div class="empty">
-               <div class="empty-icon">⧉</div>
-               <p>${p.photos.length < 2 ? "Add your drone photos to begin." : "Ready to stitch."}</p>
-             </div>`
-      }
+      <div class="tabs">
+        <button class="tab ${state.tab === "map" ? "on" : ""}" data-action="tab-map">2D map</button>
+        <button class="tab ${state.tab === "3d" ? "on" : ""}" data-action="tab-3d">3D model</button>
+      </div>
+      <div class="tab-body">
+      ${state.tab === "3d" ? view3dPane(p) : mapPane(p, m)}
+      </div>
     </main>
   </div>`;
+}
+
+function mapPane(p: ProjectView, m: ProjectView["manifest"]) {
+  return m
+    ? `<div id="map"></div>
+       <div class="map-info">
+         ${fmtPixels(m.width, m.height)} · ${fmtGsd(m.gsd, m.epsg != null)} · ${m.photos} photos
+         ${m.epsg ? ` · EPSG:${m.epsg}` : " · not georeferenced"}
+         <span id="cursor"></span>
+       </div>`
+    : `<div class="empty">
+         <div class="empty-icon">⧉</div>
+         <p>${p.photos.length < 2 ? "Add your drone photos to begin." : "Ready to stitch."}</p>
+       </div>`;
+}
+
+function view3dPane(p: ProjectView) {
+  const m3 = p.model3d;
+  if (!m3) {
+    return `<div class="empty">
+      <div class="empty-icon">◬</div>
+      <p>Build a 3D point cloud of the site from your photos.</p>
+      <p class="dim small" style="max-width:440px;text-align:center;line-height:1.5">
+        Uses every photo — angled ones included, which give walls and tree sides their shape.
+        It takes longer than the 2D map: roughly a few seconds per photo.</p>
+      <button class="primary" data-action="build3d" ${p.photos.length < 3 || state.busy ? "disabled" : ""}>Build 3D model</button>
+    </div>`;
+  }
+  return `<div id="view3d"></div>
+    <div class="map-info">
+      <span id="v3d-status">${(m3.points || m3.sparse_points).toLocaleString()} points</span>
+      <span class="v3d-tools">
+        <label>Point size <input type="range" min="1" max="6" step="0.5" value="2" id="v3d-size" /></label>
+        <button class="small-btn" data-action="v3d-reset">Reset view</button>
+        <button class="small-btn" data-action="export-cloud">Export point cloud…</button>
+      </span>
+    </div>`;
 }
 
 function exportDialog(p: ProjectView) {
@@ -277,11 +320,30 @@ function render() {
     map.remove();
     map = null;
   }
+  if (viewer) {
+    viewer.dispose();
+    viewer = null;
+  }
   root.innerHTML = (p ? projectView(p) : homeView()) + (p && modal === "export" ? exportDialog(p) : "") + notice;
   if (p) {
     drawTrack(p);
-    if (p.manifest) mountMap(p);
+    if (state.tab === "map" && p.manifest) mountMap(p);
+    if (state.tab === "3d" && p.model3d) mount3d(p);
   }
+}
+
+function mount3d(p: ProjectView) {
+  const el = document.getElementById("view3d");
+  const m3 = p.model3d!;
+  if (!el) return;
+  const file = m3.points ? "dense.ply" : "sparse.ply";
+  const status = document.getElementById("v3d-status");
+  viewer = mountViewer3D(el, `${tileBase()}3d/${file}?v=${m3.version}`, (t) => {
+    if (status) status.textContent = t;
+  });
+  document.getElementById("v3d-size")?.addEventListener("input", (e) => {
+    viewer?.setPointSize(Number((e.target as HTMLInputElement).value));
+  });
 }
 
 /** Re-renders only the run panel, so progress updates don't rebuild the map. */
@@ -482,6 +544,33 @@ async function onAction(action: string) {
       return api.process(p.dir);
     case "cancel":
       return api.cancel();
+    case "tab-map":
+      state.tab = "map";
+      return render();
+    case "tab-3d":
+      state.tab = "3d";
+      return render();
+    case "build3d":
+      if (!p) return;
+      state.busy = "3d";
+      state.tab = "3d";
+      state.progress = { stage: "features", done: 0, total: 0, message: "Starting" };
+      state.notice = null;
+      render();
+      return api.build3d(p.dir);
+    case "v3d-reset":
+      return viewer?.resetView();
+    case "export-cloud": {
+      if (!p) return;
+      const path = await save({
+        title: "Save point cloud",
+        defaultPath: `${p.name}.ply`,
+        filters: [{ name: "Point cloud (PLY)", extensions: ["ply"] }],
+      });
+      if (!path) return;
+      await api.exportCloud(p.dir, path);
+      return notify("ok", "Point cloud saved — opens in CloudCompare, MeshLab or Blender");
+    }
     case "export":
       modal = "export";
       return render();
@@ -553,7 +642,7 @@ void listen<JobFinished>("job-finished", async (e) => {
   const r = e.payload;
   state.busy = null;
   state.progress = null;
-  if (r.kind === "process" && state.project) {
+  if ((r.kind === "process" || r.kind === "3d") && state.project) {
     state.project = await api.openProject(state.project.dir);
   }
   notify(r.ok ? "ok" : "error", r.message);

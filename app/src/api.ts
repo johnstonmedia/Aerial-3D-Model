@@ -66,6 +66,7 @@ export interface ProjectView {
   settings: Settings;
   manifest: Manifest | null;
   levels: LevelInfo[];
+  model3d: { points: number; sparse_points: number; version: number } | null;
 }
 
 export interface RecentProject {
@@ -82,7 +83,7 @@ export interface Progress {
 }
 
 export interface JobFinished {
-  kind: "process" | "export";
+  kind: "process" | "export" | "3d";
   ok: boolean;
   message: string;
   detail: any;
@@ -103,6 +104,8 @@ export const api = {
   exportMap: (dir: string, format: ExportFormat, zoom: number | null, path: string) =>
     invoke<void>("export_map", { dir, format, zoom, path }),
   cancel: () => invoke<void>("cancel_job"),
+  build3d: (dir: string) => invoke<void>("build_3d", { dir }),
+  exportCloud: (dir: string, path: string) => invoke<string>("export_cloud", { dir, path }),
 };
 
 // ─────────────── Flight planner ───────────────

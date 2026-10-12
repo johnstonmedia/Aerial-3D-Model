@@ -76,6 +76,38 @@ struct ProjectView {
     settings: Settings,
     manifest: Option<Manifest>,
     levels: Vec<LevelInfo>,
+    model3d: Option<Model3d>,
+}
+
+#[derive(Serialize)]
+struct Model3d {
+    /// Points in the dense cloud (0 if only the sparse stage has run).
+    points: u64,
+    sparse_points: u64,
+    /// Changes when the model is rebuilt, so the viewer reloads it.
+    version: u64,
+}
+
+/// Vertex count from a PLY header, without reading the body.
+fn ply_count(path: &Path) -> Option<u64> {
+    use std::io::Read;
+    let mut head = vec![0u8; 1024];
+    let n = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
+    let text = String::from_utf8_lossy(&head[..n]);
+    text.lines().find_map(|l| l.strip_prefix("element vertex ")?.trim().parse().ok())
+}
+
+fn model3d(p: &Project) -> Option<Model3d> {
+    let dir = stitch_core::recon::out_dir(p);
+    let sparse_points = ply_count(&dir.join("sparse.ply"))?;
+    let dense = dir.join("dense.ply");
+    let version = std::fs::metadata(if dense.exists() { &dense } else { &dir })
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    Some(Model3d { points: ply_count(&dense).unwrap_or(0), sparse_points, version })
 }
 
 fn view(p: &Project) -> ProjectView {
@@ -103,6 +135,7 @@ fn view(p: &Project) -> ProjectView {
         settings: p.file.settings.clone(),
         manifest,
         levels,
+        model3d: model3d(p),
     }
 }
 
@@ -269,6 +302,50 @@ fn export_map(
 }
 
 #[tauri::command]
+fn build_3d(app: AppHandle, state: State<AppState>, dir: String) -> CmdResult<()> {
+    let cancel = start_job(&state)?;
+    let ctx = ctx_for(&app, cancel.clone());
+    std::thread::spawn(move || {
+        let result = Project::open(Path::new(&dir)).and_then(|p| {
+            let s = stitch_core::recon::run_sparse(&p, &ctx)?;
+            let (n, voxel) = stitch_core::recon::run_dense(&p, &ctx)?;
+            Ok((s, n, voxel))
+        });
+        let done = match result {
+            Ok((s, n, voxel)) => JobFinished {
+                kind: "3d",
+                ok: true,
+                message: format!(
+                    "3D model ready: {} points from {} photos ({} angled)",
+                    n,
+                    s.cameras.len(),
+                    s.cameras.iter().filter(|c| c.oblique).count()
+                ),
+                detail: serde_json::json!({ "points": n, "voxel_m": voxel, "rms_px": s.rms_px }),
+            },
+            Err(e) => JobFinished {
+                kind: "3d",
+                ok: false,
+                message: if cancel.load(Ordering::Relaxed) { "Cancelled".into() } else { format!("{e:#}") },
+                detail: serde_json::Value::Null,
+            },
+        };
+        finish_job(&app, done);
+    });
+    Ok(())
+}
+
+/// Copies the dense cloud (or the sparse one, if that's all there is) out.
+#[tauri::command]
+fn export_cloud(dir: String, path: String) -> CmdResult<String> {
+    let p = Project::open(Path::new(&dir)).map_err(anyerr)?;
+    let d = stitch_core::recon::out_dir(&p);
+    let src = if d.join("dense.ply").exists() { d.join("dense.ply") } else { d.join("sparse.ply") };
+    std::fs::copy(&src, &path).map_err(err)?;
+    Ok(path)
+}
+
+#[tauri::command]
 fn cancel_job(state: State<AppState>) {
     if let Some(f) = state.job.lock().unwrap().as_ref() {
         f.store(true, Ordering::Relaxed);
@@ -398,6 +475,19 @@ fn serve_tile(app: &AppHandle, uri_path: &str) -> tauri::http::Response<Vec<u8>>
     let not_found = || tauri::http::Response::builder().status(404).body(Vec::new()).unwrap();
     let Some(dir) = app.state::<AppState>().current.lock().unwrap().clone() else { return not_found() };
     let parts: Vec<&str> = uri_path.trim_start_matches('/').split('/').collect();
+    if let ["3d", name] = parts[..] {
+        if !matches!(name, "dense.ply" | "sparse.ply") {
+            return not_found();
+        }
+        return match std::fs::read(dir.join("result").join("3d").join(name)) {
+            Ok(bytes) => tauri::http::Response::builder()
+                .header("Content-Type", "application/octet-stream")
+                .header("Cache-Control", "no-cache")
+                .body(bytes)
+                .unwrap(),
+            Err(_) => not_found(),
+        };
+    }
     let [z, x, y] = parts[..] else { return not_found() };
     let (Ok(z), Ok(x)) = (z.parse::<u32>(), x.parse::<usize>()) else { return not_found() };
     let Ok(y) = y.trim_end_matches(".jpg").parse::<usize>() else { return not_found() };
@@ -429,6 +519,8 @@ pub fn run() {
             process,
             export_map,
             cancel_job,
+            build_3d,
+            export_cloud,
             recent_projects,
             plan_defaults,
             plan_flight,
