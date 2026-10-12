@@ -172,3 +172,9 @@ main { display: flex; flex-direction: column; }
 .vol-level[hidden] { display: none; }
 .vol-level select, .vol-level input { width: 100%; margin-top: 3px; }
 .hint.error { color: #ff6b6b; }
+
+/* ── Web demo ── */
+.demo-note { max-width: 560px; margin: 0 auto 18px; padding: 10px 14px; border-radius: 10px; font-size: 13px;
+  line-height: 1.5; color: var(--dim); background: rgba(54, 224, 192, 0.07); border: 1px solid rgba(54, 224, 192, 0.25); }
+.demo-note b { color: var(--accent); }
+.demo-note a { color: var(--accent); }

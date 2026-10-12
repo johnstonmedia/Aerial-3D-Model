@@ -23,7 +23,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Frame {
     /// UTM metres relative to (origin_e, origin_n); y is north.
-    Utm { zone: crate::geo::UtmZone, origin_e: f64, origin_n: f64 },
+    Utm {
+        zone: crate::geo::UtmZone,
+        origin_e: f64,
+        origin_n: f64,
+    },
     /// No GPS: units are one working pixel of the anchor photo.
     Local,
 }
@@ -53,7 +57,10 @@ impl Placed {
     /// Frame → full-resolution pixel.
     pub fn frame_to_full(&self, inv: &Sim2, fx: f64, fy: f64) -> (f64, f64) {
         let (u, v) = inv.apply(fx, fy);
-        (u / self.work_scale + self.width as f64 / 2.0, -v / self.work_scale + self.height as f64 / 2.0)
+        (
+            u / self.work_scale + self.width as f64 / 2.0,
+            -v / self.work_scale + self.height as f64 / 2.0,
+        )
     }
 
     /// Frame units per full-resolution pixel.
@@ -95,23 +102,35 @@ pub const OBLIQUE_PITCH_DEG: f64 = -75.0;
 
 pub fn effective_profile(project: &Project) -> Profile {
     match project.file.settings.profile {
-        Some(k) => Profile::for_kind(k),
+        Some(k) => Profile::for_kind(k).fit_platform(),
         None => Profile::detect(),
     }
 }
 
 pub fn process(project: &Project, ctx: &Ctx) -> Result<Summary> {
     let profile = effective_profile(project);
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(profile.threads).build()?;
-    pool.install(|| {
-        let usable: Vec<&PhotoEntry> =
-            project.file.photos.iter().filter(|p| p.enabled && p.path.exists()).collect();
+    crate::with_pool(profile.threads, || {
+        let usable: Vec<&PhotoEntry> = project
+            .file
+            .photos
+            .iter()
+            .filter(|p| p.enabled && p.path.exists())
+            .collect();
         // Angled (oblique) shots are for 3D; they'd smear a flat map. DJI
         // records the gimbal pitch, so they can be told apart reliably.
         let (photos, oblique): (Vec<&PhotoEntry>, Vec<&PhotoEntry>) =
-            usable.into_iter().partition(|p| p.meta.pitch.map_or(true, |pitch| pitch <= OBLIQUE_PITCH_DEG));
+            usable.into_iter().partition(|p| {
+                p.meta
+                    .pitch
+                    .map_or(true, |pitch| pitch <= OBLIQUE_PITCH_DEG)
+            });
         if !oblique.is_empty() {
-            ctx.report("features", 0, 0, format!("Skipping {} angled photos (kept for 3D)", oblique.len()));
+            ctx.report(
+                "features",
+                0,
+                0,
+                format!("Skipping {} angled photos (kept for 3D)", oblique.len()),
+            );
         }
         if photos.len() < 2 {
             bail!(if oblique.is_empty() {
@@ -126,8 +145,20 @@ pub fn process(project: &Project, ctx: &Ctx) -> Result<Summary> {
         ctx.report("solve", 0, 1, "Placing photos");
         let alignment = solve_alignment(project, &photos, &pairs, &matches, &profile)?;
         std::fs::create_dir_all(project.result_dir())?;
-        std::fs::write(project.result_dir().join("alignment.json"), serde_json::to_vec(&alignment)?)?;
-        ctx.report("solve", 1, 1, format!("Placed {} of {} photos", alignment.placed.len(), photos.len()));
+        std::fs::write(
+            project.result_dir().join("alignment.json"),
+            serde_json::to_vec(&alignment)?,
+        )?;
+        ctx.report(
+            "solve",
+            1,
+            1,
+            format!(
+                "Placed {} of {} photos",
+                alignment.placed.len(),
+                photos.len()
+            ),
+        );
         let manifest = crate::render::render(project, &alignment, &profile, ctx)?;
         Ok(Summary {
             photos: photos.len(),
@@ -146,18 +177,31 @@ pub fn process(project: &Project, ctx: &Ctx) -> Result<Summary> {
 }
 
 pub(crate) fn feature_path(project: &Project, key: &str, profile: &Profile) -> PathBuf {
-    project
-        .cache_dir("features")
-        .join(format!("{key}_{}_{}.af", profile.work_size, profile.max_features))
+    project.cache_dir("features").join(format!(
+        "{key}_{}_{}.af",
+        profile.work_size, profile.max_features
+    ))
 }
 
-pub(crate) fn compute_features(project: &Project, photos: &[&PhotoEntry], profile: &Profile, ctx: &Ctx) -> Result<()> {
+pub(crate) fn compute_features(
+    project: &Project,
+    photos: &[&PhotoEntry],
+    profile: &Profile,
+    ctx: &Ctx,
+) -> Result<()> {
     std::fs::create_dir_all(project.cache_dir("features"))?;
-    let todo: Vec<&&PhotoEntry> =
-        photos.iter().filter(|p| !feature_path(project, &p.key, profile).exists()).collect();
+    let todo: Vec<&&PhotoEntry> = photos
+        .iter()
+        .filter(|p| !feature_path(project, &p.key, profile).exists())
+        .collect();
     let total = photos.len();
     let done = AtomicUsize::new(total - todo.len());
-    ctx.report("features", done.load(Ordering::Relaxed), total, "Finding features");
+    ctx.report(
+        "features",
+        done.load(Ordering::Relaxed),
+        total,
+        "Finding features",
+    );
     todo.par_iter().try_for_each(|p| -> Result<()> {
         ctx.check()?;
         let rgb = load_rgb(&p.path)?;
@@ -172,25 +216,43 @@ pub(crate) fn compute_features(project: &Project, photos: &[&PhotoEntry], profil
         std::fs::write(&tmp, buf)?;
         std::fs::rename(&tmp, &path)?;
         let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-        ctx.report("features", n, total, format!("{} keypoints in {}", f.kps.len(), file_name(&p.path)));
+        ctx.report(
+            "features",
+            n,
+            total,
+            format!("{} keypoints in {}", f.kps.len(), file_name(&p.path)),
+        );
         Ok(())
     })
 }
 
-pub(crate) fn load_features(project: &Project, p: &PhotoEntry, profile: &Profile) -> Result<Features> {
+pub(crate) fn load_features(
+    project: &Project,
+    p: &PhotoEntry,
+    profile: &Profile,
+) -> Result<Features> {
     let path = feature_path(project, &p.key, profile);
-    Features::read(std::fs::File::open(&path).with_context(|| format!("missing features for {}", file_name(&p.path)))?)
+    Features::read(
+        std::fs::File::open(&path)
+            .with_context(|| format!("missing features for {}", file_name(&p.path)))?,
+    )
 }
 
 pub(crate) fn file_name(p: &std::path::Path) -> String {
-    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// The UTM zone of the survey and each photo's position in it, relative to
 /// the survey's mean position.
-pub(crate) fn gps_positions(photos: &[&PhotoEntry]) -> Option<(UtmZone, f64, f64, Vec<Option<(f64, f64)>>)> {
-    let with: Vec<(f64, f64)> =
-        photos.iter().filter_map(|p| Some((p.meta.lon?, p.meta.lat?))).collect();
+pub(crate) fn gps_positions(
+    photos: &[&PhotoEntry],
+) -> Option<(UtmZone, f64, f64, Vec<Option<(f64, f64)>>)> {
+    let with: Vec<(f64, f64)> = photos
+        .iter()
+        .filter_map(|p| Some((p.meta.lon?, p.meta.lat?)))
+        .collect();
     if with.len() < 2 {
         return None;
     }
@@ -199,12 +261,17 @@ pub(crate) fn gps_positions(photos: &[&PhotoEntry]) -> Option<(UtmZone, f64, f64
     lons.sort_by(f64::total_cmp);
     lats.sort_by(f64::total_cmp);
     let zone = UtmZone::for_lonlat(lons[lons.len() / 2], lats[lats.len() / 2]);
-    let abs: Vec<Option<(f64, f64)>> =
-        photos.iter().map(|p| Some(to_utm(p.meta.lon?, p.meta.lat?, zone))).collect();
+    let abs: Vec<Option<(f64, f64)>> = photos
+        .iter()
+        .map(|p| Some(to_utm(p.meta.lon?, p.meta.lat?, zone)))
+        .collect();
     let n = abs.iter().flatten().count() as f64;
     let e0 = (abs.iter().flatten().map(|v| v.0).sum::<f64>() / n).round();
     let n0 = (abs.iter().flatten().map(|v| v.1).sum::<f64>() / n).round();
-    let rel = abs.into_iter().map(|v| v.map(|(e, n)| (e - e0, n - n0))).collect();
+    let rel = abs
+        .into_iter()
+        .map(|v| v.map(|(e, n)| (e - e0, n - n0)))
+        .collect();
     Some((zone, e0, n0, rel))
 }
 
@@ -215,8 +282,11 @@ pub(crate) fn candidate_pairs(photos: &[&PhotoEntry], k: usize) -> Vec<(usize, u
     if let Some((_, _, _, pos)) = gps_positions(photos) {
         // GPS neighbours: the k nearest. On a lawnmower survey that reaches
         // the adjacent flight lines as well as the photos either side.
-        let pts: Vec<(usize, (f64, f64))> =
-            pos.iter().enumerate().filter_map(|(i, p)| p.map(|p| (i, p))).collect();
+        let pts: Vec<(usize, (f64, f64))> = pos
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| p.map(|p| (i, p)))
+            .collect();
         for &(i, pi) in &pts {
             let mut d: Vec<(f64, usize)> = pts
                 .iter()
@@ -278,12 +348,16 @@ pub(crate) fn compute_matches(
         .map(|&(i, j)| -> Result<((usize, usize), Option<PairMatch>)> {
             ctx.check()?;
             let path = match_path(project, photos[i], photos[j], profile);
-            let m = match std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
+            let m = match std::fs::read(&path)
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+            {
                 Some(cached) => cached,
                 None => {
                     let fa = load_features(project, photos[i], profile)?;
                     let fb = load_features(project, photos[j], profile)?;
-                    let seed = (i as u64).wrapping_mul(0x9E37_79B9) ^ (j as u64).wrapping_mul(0x85EB_CA6B);
+                    let seed =
+                        (i as u64).wrapping_mul(0x9E37_79B9) ^ (j as u64).wrapping_mul(0x85EB_CA6B);
                     let m = match_pair(&fa, &fb, seed, &params);
                     std::fs::write(&path, serde_json::to_vec(&m)?)?;
                     m
@@ -296,7 +370,10 @@ pub(crate) fn compute_matches(
             Ok(((i, j), m))
         })
         .collect::<Result<_>>()?;
-    Ok(results.into_iter().filter_map(|(k, m)| m.map(|m| (k, m))).collect())
+    Ok(results
+        .into_iter()
+        .filter_map(|(k, m)| m.map(|m| (k, m)))
+        .collect())
 }
 
 struct Dsu(Vec<usize>);
@@ -336,7 +413,8 @@ pub(crate) fn solve_alignment(
         let f = load_features(project, p, profile)?;
         work.push((f.w as f64, f.h as f64, f.scale));
     }
-    let centred = |i: usize, x: f32, y: f32| (x as f64 - work[i].0 / 2.0, -(y as f64 - work[i].1 / 2.0));
+    let centred =
+        |i: usize, x: f32, y: f32| (x as f64 - work[i].0 / 2.0, -(y as f64 - work[i].1 / 2.0));
 
     // Pairwise similarities in centred y-up coordinates, plus sampled points.
     struct Edge {
@@ -347,10 +425,16 @@ pub(crate) fn solve_alignment(
     }
     let mut edges = Vec::new();
     for (&(i, j), m) in matches {
-        let pts: Vec<_> = m.points.iter().map(|p| (centred(i, p[0], p[1]), centred(j, p[2], p[3]))).collect();
+        let pts: Vec<_> = m
+            .points
+            .iter()
+            .map(|p| (centred(i, p[0], p[1]), centred(j, p[2], p[3])))
+            .collect();
         let src: Vec<_> = pts.iter().map(|p| p.0).collect();
         let dst: Vec<_> = pts.iter().map(|p| p.1).collect();
-        let Some(sim) = Sim2::fit(&src, &dst) else { continue };
+        let Some(sim) = Sim2::fit(&src, &dst) else {
+            continue;
+        };
         let step = (pts.len() / 40).max(1);
         let pts = pts.into_iter().step_by(step).collect();
         edges.push(Edge { i, j, sim, pts });
@@ -400,13 +484,24 @@ pub(crate) fn solve_alignment(
     let frame;
     match &gps {
         Some((zone, e0, n0, pos)) => {
-            frame = Frame::Utm { zone: *zone, origin_e: *e0, origin_n: *n0 };
+            frame = Frame::Utm {
+                zone: *zone,
+                origin_e: *e0,
+                origin_n: *n0,
+            };
             // Bring each component into UTM using its photos' GPS.
             let mut solo_scale = Vec::new();
             for members in &comps {
-                let src: Vec<_> = members.iter().filter(|&&i| pos[i].is_some()).map(|&i| (init[i].tx, init[i].ty)).collect();
+                let src: Vec<_> = members
+                    .iter()
+                    .filter(|&&i| pos[i].is_some())
+                    .map(|&i| (init[i].tx, init[i].ty))
+                    .collect();
                 let dst: Vec<_> = members.iter().filter_map(|&i| pos[i]).collect();
-                let spread = dst.iter().map(|d| (d.0 - dst[0].0).hypot(d.1 - dst[0].1)).fold(0.0, f64::max);
+                let spread = dst
+                    .iter()
+                    .map(|d| (d.0 - dst[0].0).hypot(d.1 - dst[0].1))
+                    .fold(0.0, f64::max);
                 if members.len() >= 2 && src.len() >= 2 && spread > 5.0 {
                     if let Some(g) = Sim2::fit(&src, &dst) {
                         for &i in members {
@@ -430,7 +525,12 @@ pub(crate) fn solve_alignment(
                         if let Some((e, nn)) = pos[i] {
                             // Image "up" points along the gimbal yaw (clockwise from north).
                             let rot = photos[i].meta.yaw.map(|y| -y.to_radians()).unwrap_or(0.0);
-                            init[i] = Sim2 { a: scale * rot.cos(), b: scale * rot.sin(), tx: e, ty: nn };
+                            init[i] = Sim2 {
+                                a: scale * rot.cos(),
+                                b: scale * rot.sin(),
+                                tx: e,
+                                ty: nn,
+                            };
                             placed_mask[i] = true;
                         }
                     }
@@ -449,19 +549,32 @@ pub(crate) fn solve_alignment(
     // Global refinement over everything placed.
     let index: Vec<Option<usize>> = {
         let mut next = 0;
-        placed_mask.iter().map(|&p| p.then(|| { next += 1; next - 1 })).collect()
+        placed_mask
+            .iter()
+            .map(|&p| {
+                p.then(|| {
+                    next += 1;
+                    next - 1
+                })
+            })
+            .collect()
     };
     let m = placed_mask.iter().filter(|&&p| p).count();
     if m < 2 {
         bail!("couldn't place the photos: they don't overlap enough and have no GPS");
     }
-    let mut scales: Vec<f64> = (0..n).filter(|&i| placed_mask[i]).map(|i| init[i].scale()).collect();
+    let mut scales: Vec<f64> = (0..n)
+        .filter(|&i| placed_mask[i])
+        .map(|i| init[i].scale())
+        .collect();
     scales.sort_by(f64::total_cmp);
     let s_med = scales[scales.len() / 2];
     let mut sys = LinearSystem::new(m);
     let w_match = 1.0 / s_med; // 1 working pixel of error ≈ 1 unit of cost
     for e in &edges {
-        let (Some(a), Some(b)) = (index[e.i], index[e.j]) else { continue };
+        let (Some(a), Some(b)) = (index[e.i], index[e.j]) else {
+            continue;
+        };
         for (pi, pj) in &e.pts {
             sys.add_match(a, *pi, b, *pj, w_match);
         }
@@ -484,7 +597,11 @@ pub(crate) fn solve_alignment(
         degree[e.j] += 1;
     }
     for members in &comps {
-        let Some(&anchor) = members.iter().filter(|&&i| placed_mask[i]).max_by_key(|&&i| degree[i]) else {
+        let Some(&anchor) = members
+            .iter()
+            .filter(|&&i| placed_mask[i])
+            .max_by_key(|&&i| degree[i])
+        else {
             continue;
         };
         let k = index[anchor].unwrap();
@@ -497,13 +614,21 @@ pub(crate) fn solve_alignment(
     // error is spread evenly rather than all charged to the pinned photo.
     if let Some((_, _, _, pos)) = &gps {
         for members in &comps {
-            let ks: Vec<(usize, (f64, f64))> =
-                members.iter().filter_map(|&i| Some((index[i]?, pos[i]?))).collect();
-            let spread = ks.iter().map(|(_, d)| (d.0 - ks[0].1 .0).hypot(d.1 - ks[0].1 .1)).fold(0.0, f64::max);
+            let ks: Vec<(usize, (f64, f64))> = members
+                .iter()
+                .filter_map(|&i| Some((index[i]?, pos[i]?)))
+                .collect();
+            let spread = ks
+                .iter()
+                .map(|(_, d)| (d.0 - ks[0].1 .0).hypot(d.1 - ks[0].1 .1))
+                .fold(0.0, f64::max);
             if ks.len() < 3 || spread < 5.0 {
                 continue;
             }
-            let src: Vec<_> = ks.iter().map(|&(k, _)| (solved[k].tx, solved[k].ty)).collect();
+            let src: Vec<_> = ks
+                .iter()
+                .map(|&(k, _)| (solved[k].tx, solved[k].ty))
+                .collect();
             let dst: Vec<_> = ks.iter().map(|&(_, d)| d).collect();
             if let Some(g) = Sim2::fit(&src, &dst) {
                 for &i in members {
@@ -518,7 +643,9 @@ pub(crate) fn solve_alignment(
     // RMS over matches, in working pixels of photo i.
     let (mut se, mut cnt) = (0.0, 0usize);
     for e in &edges {
-        let (Some(a), Some(b)) = (index[e.i], index[e.j]) else { continue };
+        let (Some(a), Some(b)) = (index[e.i], index[e.j]) else {
+            continue;
+        };
         for (pi, pj) in &e.pts {
             let p = solved[a].apply(pi.0, pi.1);
             let q = solved[b].apply(pj.0, pj.1);
@@ -551,6 +678,10 @@ pub(crate) fn solve_alignment(
         unplaced,
         pairs_tried: pairs.len(),
         pairs_matched: edges.len(),
-        rms_px: if cnt > 0 { (se / cnt as f64).sqrt() } else { 0.0 },
+        rms_px: if cnt > 0 {
+            (se / cnt as f64).sqrt()
+        } else {
+            0.0
+        },
     })
 }

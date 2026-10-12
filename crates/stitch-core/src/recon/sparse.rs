@@ -79,7 +79,12 @@ fn initial_focal_px(p: &PhotoEntry) -> f64 {
         return f35 / 43.2666 * (w * w + h * h).sqrt();
     }
     if let Some(fmm) = p.meta.focal_mm {
-        let sw = p.meta.model.as_deref().and_then(sensor_width_mm).unwrap_or(6.17);
+        let sw = p
+            .meta
+            .model
+            .as_deref()
+            .and_then(sensor_width_mm)
+            .unwrap_or(6.17);
         return fmm / sw * w;
     }
     0.8 * w
@@ -103,7 +108,12 @@ fn is_oblique(p: &PhotoEntry) -> bool {
 pub fn reconstruct_sparse(project: &Project, ctx: &Ctx) -> Result<Sparse> {
     let profile = effective_profile(project);
     let p3 = profile_3d(&profile);
-    let mut photos: Vec<&PhotoEntry> = project.file.photos.iter().filter(|p| p.enabled && p.path.exists()).collect();
+    let mut photos: Vec<&PhotoEntry> = project
+        .file
+        .photos
+        .iter()
+        .filter(|p| p.enabled && p.path.exists())
+        .collect();
     // Older projects predate the focal-length fields: re-read on demand.
     let refreshed: Vec<PhotoEntry> = photos
         .iter()
@@ -128,7 +138,10 @@ pub fn reconstruct_sparse(project: &Project, ctx: &Ctx) -> Result<Sparse> {
     lons.sort_by(f64::total_cmp);
     lats.sort_by(f64::total_cmp);
     let zone = UtmZone::for_lonlat(lons[lons.len() / 2], lats[lats.len() / 2]);
-    let utm: Vec<Option<(f64, f64)>> = photos.iter().map(|p| Some(to_utm(p.meta.lon?, p.meta.lat?, zone))).collect();
+    let utm: Vec<Option<(f64, f64)>> = photos
+        .iter()
+        .map(|p| Some(to_utm(p.meta.lon?, p.meta.lat?, zone)))
+        .collect();
     let n_gps = utm.iter().flatten().count() as f64;
     let e0 = (utm.iter().flatten().map(|v| v.0).sum::<f64>() / n_gps).round();
     let n0 = (utm.iter().flatten().map(|v| v.1).sum::<f64>() / n_gps).round();
@@ -136,11 +149,18 @@ pub fn reconstruct_sparse(project: &Project, ctx: &Ctx) -> Result<Sparse> {
     let height = |p: &PhotoEntry| if use_rel { p.meta.rel_alt } else { p.meta.alt };
 
     // ── 2D solve, for the yaw of nadir photos without gimbal data ──
-    let needs_2d = photos.iter().any(|p| !is_oblique(p) && p.meta.yaw.is_none());
+    let needs_2d = photos
+        .iter()
+        .any(|p| !is_oblique(p) && p.meta.yaw.is_none());
     let mut yaw_2d: HashMap<u32, f64> = HashMap::new();
     let mut gsd_2d: Option<f64> = None;
     if needs_2d {
-        ctx.report("features", 0, 0, "Estimating camera directions from the 2D layout");
+        ctx.report(
+            "features",
+            0,
+            0,
+            "Estimating camera directions from the 2D layout",
+        );
         let nadir: Vec<&PhotoEntry> = photos.iter().copied().filter(|p| !is_oblique(p)).collect();
         pipeline::compute_features(project, &nadir, &profile, ctx)?;
         let pairs = pipeline::candidate_pairs(&nadir, project.file.settings.neighbours);
@@ -246,18 +266,32 @@ pub fn reconstruct_sparse(project: &Project, ctx: &Ctx) -> Result<Sparse> {
         .map(|&(i, j)| -> Result<((usize, usize), Vec<(u32, u32)>)> {
             ctx.check()?;
             let (a, b) = (all[i], all[j]);
-            let path = cache.join(format!("{}_{}_{}_{}.json", a.key, b.key, p3.work_size, p3.max_features));
-            let m: Vec<(u32, u32)> = match std::fs::read(&path).ok().and_then(|x| serde_json::from_slice(&x).ok()) {
+            let path = cache.join(format!(
+                "{}_{}_{}_{}.json",
+                a.key, b.key, p3.work_size, p3.max_features
+            ));
+            let m: Vec<(u32, u32)> = match std::fs::read(&path)
+                .ok()
+                .and_then(|x| serde_json::from_slice(&x).ok())
+            {
                 Some(m) => m,
                 None => {
                     let fa = load_features(project, a, &p3)?;
                     let fb = load_features(project, b, &p3)?;
                     let put = putative(&fa, &fb);
-                    let pa: Vec<(f64, f64)> = put.iter().map(|&(x, _)| (fa.kps[x].x as f64, fa.kps[x].y as f64)).collect();
-                    let pb: Vec<(f64, f64)> = put.iter().map(|&(_, y)| (fb.kps[y].x as f64, fb.kps[y].y as f64)).collect();
+                    let pa: Vec<(f64, f64)> = put
+                        .iter()
+                        .map(|&(x, _)| (fa.kps[x].x as f64, fa.kps[x].y as f64))
+                        .collect();
+                    let pb: Vec<(f64, f64)> = put
+                        .iter()
+                        .map(|&(_, y)| (fb.kps[y].x as f64, fb.kps[y].y as f64))
+                        .collect();
                     let inl = ransac_fundamental(&pa, &pb, 1.5, 600, (i * 7919 + j) as u64);
                     let m: Vec<(u32, u32)> = if inl.len() >= 20 {
-                        inl.iter().map(|&t| (put[t].0 as u32, put[t].1 as u32)).collect()
+                        inl.iter()
+                            .map(|&t| (put[t].0 as u32, put[t].1 as u32))
+                            .collect()
                     } else {
                         Vec::new()
                     };
@@ -281,13 +315,19 @@ pub fn reconstruct_sparse(project: &Project, ctx: &Ctx) -> Result<Sparse> {
         .iter()
         .map(|p| {
             let f = load_features(project, p, &p3)?;
-            Ok(f.kps.iter().map(|k| Vector2::new(k.x as f64 / f.scale, k.y as f64 / f.scale)).collect())
+            Ok(f.kps
+                .iter()
+                .map(|k| Vector2::new(k.x as f64 / f.scale, k.y as f64 / f.scale))
+                .collect())
         })
         .collect::<Result<_>>()?;
     let mut matches = matches;
     let mut tracks = build_tracks(&kps, &matches);
     if tracks.len() < 50 {
-        bail!("too few matching points between photos to build 3D ({}) — are the photos overlapping?", tracks.len());
+        bail!(
+            "too few matching points between photos to build 3D ({}) — are the photos overlapping?",
+            tracks.len()
+        );
     }
 
     // ── Rounds of triangulate → bundle adjust ──
@@ -318,18 +358,41 @@ pub fn reconstruct_sparse(project: &Project, ctx: &Ctx) -> Result<Sparse> {
             matches.retain(|(_, m)| !m.is_empty());
             let before = matches.len();
             matches.retain(|((i, j), m)| {
-                pair_fits(&poses[*i], &poses[*j], &intrinsics[group[*i]], &intrinsics[group[*j]], &kps[*i], &kps[*j], m)
-                    < 6.0 * work_to_full
+                pair_fits(
+                    &poses[*i],
+                    &poses[*j],
+                    &intrinsics[group[*i]],
+                    &intrinsics[group[*j]],
+                    &kps[*i],
+                    &kps[*j],
+                    m,
+                ) < 6.0 * work_to_full
             });
             tracks = build_tracks(&kps, &matches);
-            ctx.report("bundle", ri, rounds.len(), format!("Dropped {} of {} photo pairs as inconsistent", before - matches.len(), before));
+            ctx.report(
+                "bundle",
+                ri,
+                rounds.len(),
+                format!(
+                    "Dropped {} of {} photo pairs as inconsistent",
+                    before - matches.len(),
+                    before
+                ),
+            );
         }
-        ctx.report("bundle", ri, rounds.len(), format!("Refining cameras (round {} of {})", ri + 1, rounds.len()));
+        ctx.report(
+            "bundle",
+            ri,
+            rounds.len(),
+            format!("Refining cameras (round {} of {})", ri + 1, rounds.len()),
+        );
         kept = tracks
             .par_iter()
             .filter_map(|t| {
-                let obs: Vec<(Pose, Vector2<f64>)> =
-                    t.iter().map(|(c, u)| (poses[*c], intrinsics[group[*c]].undistort(*u))).collect();
+                let obs: Vec<(Pose, Vector2<f64>)> = t
+                    .iter()
+                    .map(|(c, u)| (poses[*c], intrinsics[group[*c]].undistort(*u)))
+                    .collect();
                 let x = triangulate(&obs)?;
                 let mut good: Vec<(usize, Vector2<f64>)> = Vec::new();
                 for (c, u) in t {
@@ -348,19 +411,31 @@ pub fn reconstruct_sparse(project: &Project, ctx: &Ctx) -> Result<Sparse> {
                 // the flight line scatters points far below the ground.
                 let centres: Vec<V3> = good.iter().map(|(c, _)| poses[*c].c).collect();
                 let angle = max_ray_angle(&x, &centres);
-                let ok = if good.len() >= 3 { angle > 2.0 } else { angle > 6.0 };
+                let ok = if good.len() >= 3 {
+                    angle > 2.0
+                } else {
+                    angle > 6.0
+                };
                 ok.then_some((x, good))
             })
             .collect();
         if kept.len() < 30 {
-            bail!("the photos didn't agree on enough 3D points ({} after round {})", kept.len(), ri + 1);
+            bail!(
+                "the photos didn't agree on enough 3D points ({} after round {})",
+                kept.len(),
+                ri + 1
+            );
         }
         let mut obs = Vec::new();
         let mut points = Vec::with_capacity(kept.len());
         for (pi, (x, o)) in kept.iter().enumerate() {
             points.push(*x);
             for (c, u) in o {
-                obs.push(Obs { cam: *c as u32, pt: pi as u32, u: *u });
+                obs.push(Obs {
+                    cam: *c as u32,
+                    pt: pi as u32,
+                    u: *u,
+                });
             }
         }
         let mut prob = Problem {
@@ -377,7 +452,12 @@ pub fn reconstruct_sparse(project: &Project, ctx: &Ctx) -> Result<Sparse> {
             "bundle",
             ri + 1,
             rounds.len(),
-            format!("{} points, error {:.1} → {:.1} px", kept.len(), st.initial_rms, st.final_rms),
+            format!(
+                "{} points, error {:.1} → {:.1} px",
+                kept.len(),
+                st.initial_rms,
+                st.final_rms
+            ),
         );
         poses = prob.poses;
         intrinsics = prob.intr;
@@ -416,7 +496,9 @@ pub fn reconstruct_sparse(project: &Project, ctx: &Ctx) -> Result<Sparse> {
             if list.is_empty() {
                 return Vec::new();
             }
-            let Ok(img) = load_rgb(&all[c].path) else { return Vec::new() };
+            let Ok(img) = load_rgb(&all[c].path) else {
+                return Vec::new();
+            };
             let (small, s) = shrink_to(img, 1200);
             list.iter()
                 .filter_map(|(pi, u)| {
@@ -460,7 +542,11 @@ pub fn reconstruct_sparse(project: &Project, ctx: &Ctx) -> Result<Sparse> {
         zone,
         origin_e: e0,
         origin_n: n0,
-        height_ref: if use_rel { "takeoff".into() } else { "gps".into() },
+        height_ref: if use_rel {
+            "takeoff".into()
+        } else {
+            "gps".into()
+        },
         intrinsics,
         cameras,
         points: kept.iter().map(|(x, _)| [x.x, x.y, x.z]).collect(),
@@ -472,7 +558,10 @@ pub fn reconstruct_sparse(project: &Project, ctx: &Ctx) -> Result<Sparse> {
 
 /// Links pairwise matches into multi-photo tracks (union–find), keeping only
 /// tracks seen at most once per photo.
-fn build_tracks(kps: &[Vec<Vector2<f64>>], matches: &[((usize, usize), Vec<(u32, u32)>)]) -> Vec<Vec<(usize, Vector2<f64>)>> {
+fn build_tracks(
+    kps: &[Vec<Vector2<f64>>],
+    matches: &[((usize, usize), Vec<(u32, u32)>)],
+) -> Vec<Vec<(usize, Vector2<f64>)>> {
     let mut offset = vec![0usize; kps.len() + 1];
     for i in 0..kps.len() {
         offset[i + 1] = offset[i] + kps[i].len();

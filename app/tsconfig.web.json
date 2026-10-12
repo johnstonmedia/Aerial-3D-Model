@@ -1,0 +1,41 @@
+{
+  "compilerOptions": {
+    "target": "ES2021",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUnusedLocals": true,
+    "lib": [
+      "ES2021",
+      "DOM",
+      "DOM.Iterable",
+      "WebWorker"
+    ],
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "paths": {
+      "@platform": [
+        "./web/platform.ts"
+      ],
+      "@tauri-apps/api/core": [
+        "./web/tauri/core.ts"
+      ],
+      "@tauri-apps/api/event": [
+        "./web/tauri/event.ts"
+      ],
+      "@tauri-apps/api/webview": [
+        "./web/tauri/webview.ts"
+      ],
+      "@tauri-apps/plugin-dialog": [
+        "./web/tauri/dialog.ts"
+      ]
+    },
+    "types": [
+      "vite/client"
+    ]
+  },
+  "include": [
+    "src",
+    "web"
+  ]
+}

@@ -21,11 +21,19 @@ impl Default for Sim2 {
 }
 
 impl Sim2 {
-    pub const IDENTITY: Sim2 = Sim2 { a: 1.0, b: 0.0, tx: 0.0, ty: 0.0 };
+    pub const IDENTITY: Sim2 = Sim2 {
+        a: 1.0,
+        b: 0.0,
+        tx: 0.0,
+        ty: 0.0,
+    };
 
     #[inline]
     pub fn apply(&self, x: f64, y: f64) -> (f64, f64) {
-        (self.a * x - self.b * y + self.tx, self.b * x + self.a * y + self.ty)
+        (
+            self.a * x - self.b * y + self.tx,
+            self.b * x + self.a * y + self.ty,
+        )
     }
 
     pub fn scale(&self) -> f64 {
@@ -43,7 +51,12 @@ impl Sim2 {
         // t' = -c⁻¹·t
         let tx = -(ia * self.tx - ib * self.ty);
         let ty = -(ib * self.tx + ia * self.ty);
-        Sim2 { a: ia, b: ib, tx, ty }
+        Sim2 {
+            a: ia,
+            b: ib,
+            tx,
+            ty,
+        }
     }
 
     /// `self ∘ other`: applies `other` first.
@@ -94,7 +107,12 @@ mod tests {
 
     #[test]
     fn fit_recovers_transform_and_inverse_round_trips() {
-        let t = Sim2 { a: 0.8, b: 0.3, tx: 12.0, ty: -4.0 };
+        let t = Sim2 {
+            a: 0.8,
+            b: 0.3,
+            tx: 12.0,
+            ty: -4.0,
+        };
         let src = [(0.0, 0.0), (10.0, 3.0), (-5.0, 7.0), (2.0, -9.0)];
         let dst: Vec<_> = src.iter().map(|&(x, y)| t.apply(x, y)).collect();
         let f = Sim2::fit(&src, &dst).unwrap();

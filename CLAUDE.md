@@ -151,6 +151,33 @@ Local-first drone-photo stitcher. Read README.md first.
   filesystem scope is granted to the webview.
 - Long jobs run on a thread and emit `progress` / `job-finished` events.
 
+## Web demo (app/web/, .github/workflows/web-demo.yml)
+- It is the SAME program: `stitch-cli` built for `wasm32-wasip1`, run in a
+  Web Worker by `@bjorn3/browser_wasi_shim`, under the SAME UI (`app/src`).
+  `vite build --mode web` aliases the four Tauri modules and `@platform` to
+  stand-ins in `app/web/`; nothing in `app/src` knows which it is beyond
+  `platform.IS_WEB`.
+- **One backend for both front ends:** every command the UI calls lives in
+  `stitch-core/src/appapi.rs`. Tauri commands are one-line wrappers; the web
+  calls `aerial-stitch api` (JSON request on stdin, JSON answer on stdout,
+  `@progress {json}` lines on stderr) through `appapi::dispatch`. Add new
+  commands THERE, or the web demo silently lacks them.
+- No threads in WASI: `with_pool()` (lib.rs) falls back to the calling thread
+  when rayon can't build a pool, and `Profile::fit_platform()` forces 1 thread
+  and a 320 MB render cache on wasm. Output is bit-identical to native Lite
+  (verified: same pairs, size, rms on a 16-photo set).
+- Photos are `BlobFile` inodes — handles on the user's File, read in slices
+  with FileReaderSync — never copied into memory. Outputs live in the shim's
+  in-memory FS; its `fd_write` is patched to grow geometrically (the stock one
+  re-copies the whole file per write: quadratic on a GeoTIFF).
+- WASM can't be interrupted: Cancel terminates the worker, which loses the
+  in-memory projects. The UI says so and returns home (`demo-reset` event).
+- Node's own `node:wasi` SEGFAULTS during render on this binary; test with the
+  browser shim (or a real browser), not `node:wasi`.
+- Sample photos are fetched at runtime from OpenDroneMap's public
+  odm_data_aukerman repo (it has no stated licence, so we don't re-host them).
+- Measured in Chromium, 16 × 18 MP: stitch 84 s.
+
 ## CI
 `.github/workflows/build.yml` cross-compiles the Windows ARM64 NSIS installer on
 an x64 runner. Uncomment the x64 matrix entry to ship Intel/AMD too.

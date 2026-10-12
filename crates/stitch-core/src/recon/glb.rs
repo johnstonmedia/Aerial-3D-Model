@@ -63,10 +63,16 @@ impl Glb {
                 }
             }
             let pv = view(&mut bin, &buf, Some(34962));
-            accessors.push(json!({ "bufferView": pv, "componentType": 5126, "count": p.positions.len(),
-                                   "type": "VEC3", "min": lo, "max": hi }));
+            accessors.push(
+                json!({ "bufferView": pv, "componentType": 5126, "count": p.positions.len(),
+                                   "type": "VEC3", "min": lo, "max": hi }),
+            );
             let pa = accessors.len() - 1;
-            let buf: Vec<u8> = p.uvs.iter().flat_map(|uv| [uv[0].to_le_bytes(), uv[1].to_le_bytes()].concat()).collect();
+            let buf: Vec<u8> = p
+                .uvs
+                .iter()
+                .flat_map(|uv| [uv[0].to_le_bytes(), uv[1].to_le_bytes()].concat())
+                .collect();
             let uvv = view(&mut bin, &buf, Some(34962));
             accessors.push(json!({ "bufferView": uvv, "componentType": 5126, "count": p.uvs.len(), "type": "VEC2" }));
             let ua = accessors.len() - 1;
@@ -158,7 +164,10 @@ mod tests {
         g.write(&p).unwrap();
         let b = std::fs::read(&p).unwrap();
         assert_eq!(&b[0..4], b"glTF");
-        assert_eq!(u32::from_le_bytes(b[8..12].try_into().unwrap()) as usize, b.len());
+        assert_eq!(
+            u32::from_le_bytes(b[8..12].try_into().unwrap()) as usize,
+            b.len()
+        );
         let jl = u32::from_le_bytes(b[12..16].try_into().unwrap()) as usize;
         assert_eq!(&b[16..20], b"JSON");
         let doc: Value = serde_json::from_slice(&b[20..20 + jl]).unwrap();

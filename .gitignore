@@ -3,3 +3,5 @@ node_modules/
 /app/dist/
 *.tmp
 .DS_Store
+/app/dist-web/
+/app/public-web/

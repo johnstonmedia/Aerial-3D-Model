@@ -8,7 +8,12 @@ use std::path::Path;
 /// Writes `xyz` (local metres) + 8-bit colour as little-endian binary PLY.
 /// Positions are stored as f32 relative to the project origin; the origin
 /// is written as a comment so the absolute location is never lost.
-pub fn write_ply(path: &Path, points: &[[f32; 3]], colors: &[[u8; 3]], comment: &str) -> Result<()> {
+pub fn write_ply(
+    path: &Path,
+    points: &[[f32; 3]],
+    colors: &[[u8; 3]],
+    comment: &str,
+) -> Result<()> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }

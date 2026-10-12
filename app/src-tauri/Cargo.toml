@@ -15,7 +15,6 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
-zip = { version = "2", default-features = false, features = ["deflate"] }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

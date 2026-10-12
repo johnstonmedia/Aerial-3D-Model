@@ -33,6 +33,18 @@ No uploads, no accounts, no image limits.
   limit) plus a KML of the route to check in Google Earth. Mavic Air 2 and
   Air 2S presets built in.
 
+## Try it in your browser
+
+**[johnstonmedia.github.io/Aerial-3D-Model](https://johnstonmedia.github.io/Aerial-3D-Model/)**
+— the web demo. It is the same engine and the same app, compiled to
+WebAssembly, running entirely in the browser tab: your photos are read from
+your own disk and never uploaded. Use your own photos or the 16-photo sample
+survey.
+
+Compared with the desktop app it runs on one CPU core (several times slower),
+keeps projects only until the tab is closed, and suits up to ~40 photos. The
+3D model works too, but slowly.
+
 ## Versions
 
 | Build | Machines | Status |
@@ -41,6 +53,7 @@ No uploads, no accounts, no image limits.
 | Windows x64 | Intel / AMD | one line in `build.yml` |
 | macOS Apple Silicon | M-series (16 GB+) | planned |
 | macOS Lite | MacBook Neo (A18 Pro, 8 GB) | planned |
+| Web demo | any modern browser | ✅ published by CI (GitHub Pages) |
 
 All share one codebase. The app picks a **memory profile** from installed RAM
 (Lite < 12 GB, Standard 12–28 GB, High ≥ 28 GB); it can be overridden per

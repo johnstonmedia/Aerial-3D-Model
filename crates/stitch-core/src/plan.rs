@@ -74,7 +74,10 @@ pub struct Shot {
 }
 
 pub fn nadir_only() -> Vec<Shot> {
-    vec![Shot { pitch_deg: -90.0, yaw_offset_deg: 0.0 }]
+    vec![Shot {
+        pitch_deg: -90.0,
+        yaw_offset_deg: 0.0,
+    }]
 }
 
 /// Litchi allows 15 actions per waypoint.
@@ -238,7 +241,11 @@ pub fn plan(input: &PlanInput) -> Result<Plan> {
         if input.shots.is_empty() {
             bail!("add at least one photo per waypoint");
         }
-        if input.shots.iter().any(|s| !(-90.0..=0.0).contains(&s.pitch_deg)) {
+        if input
+            .shots
+            .iter()
+            .any(|s| !(-90.0..=0.0).contains(&s.pitch_deg))
+        {
             bail!("camera tilt must be between -90° (straight down) and 0° (horizon)");
         }
         let worst = waypoint_actions(input, true, 0.0).len();
@@ -323,7 +330,11 @@ pub fn plan(input: &PlanInput) -> Result<Plan> {
         // A line that clips only a vertex still needs covering: use the
         // nearest edge span so the boundary's extremes aren't skipped.
         if xs.is_empty() {
-            let near: Vec<f64> = local.iter().filter(|p| (p.1 - y).abs() <= line_spacing / 2.0).map(|p| p.0).collect();
+            let near: Vec<f64> = local
+                .iter()
+                .filter(|p| (p.1 - y).abs() <= line_spacing / 2.0)
+                .map(|p| p.0)
+                .collect();
             if near.is_empty() {
                 continue;
             }
@@ -375,15 +386,36 @@ pub fn plan(input: &PlanInput) -> Result<Plan> {
                 let step = if n > 1 { len / (n - 1) as f64 } else { 0.0 };
                 for i in 0..n {
                     let (lon, lat) = unproject(x0 + dir * step * i as f64, y);
-                    wps.push(Waypoint { lon, lat, heading, photo: true, photo_dist_m: 0.0, first: false });
+                    wps.push(Waypoint {
+                        lon,
+                        lat,
+                        heading,
+                        photo: true,
+                        photo_dist_m: 0.0,
+                        first: false,
+                    });
                 }
                 photos = n * input.shots.len().max(1);
             }
             CaptureMode::DistanceInterval => {
                 let (lon, lat) = unproject(x0, y);
-                wps.push(Waypoint { lon, lat, heading, photo: false, photo_dist_m: photo_spacing, first: false });
+                wps.push(Waypoint {
+                    lon,
+                    lat,
+                    heading,
+                    photo: false,
+                    photo_dist_m: photo_spacing,
+                    first: false,
+                });
                 let (lon, lat) = unproject(x1, y);
-                wps.push(Waypoint { lon, lat, heading, photo: false, photo_dist_m: 0.0, first: false });
+                wps.push(Waypoint {
+                    lon,
+                    lat,
+                    heading,
+                    photo: false,
+                    photo_dist_m: 0.0,
+                    first: false,
+                });
                 photos = (len / photo_spacing).floor() as usize + 1;
             }
         }
@@ -405,7 +437,13 @@ pub fn plan(input: &PlanInput) -> Result<Plan> {
         l.len / speed + stops + TURN_OVERHEAD_S
     };
     let mut missions: Vec<Mission> = Vec::new();
-    let mut cur = Mission { waypoints: Vec::new(), lines: 0, photos: 0, distance_m: 0.0, duration_s: 0.0 };
+    let mut cur = Mission {
+        waypoints: Vec::new(),
+        lines: 0,
+        photos: 0,
+        distance_m: 0.0,
+        duration_s: 0.0,
+    };
     for (k, l) in built.iter().enumerate() {
         let transit = if cur.lines > 0 { line_spacing } else { 0.0 };
         let add_t = line_time(l) + transit / speed;
@@ -421,7 +459,13 @@ pub fn plan(input: &PlanInput) -> Result<Plan> {
         if cur.lines > 0 && (over_wp || over_t) {
             missions.push(std::mem::replace(
                 &mut cur,
-                Mission { waypoints: Vec::new(), lines: 0, photos: 0, distance_m: 0.0, duration_s: 0.0 },
+                Mission {
+                    waypoints: Vec::new(),
+                    lines: 0,
+                    photos: 0,
+                    distance_m: 0.0,
+                    duration_s: 0.0,
+                },
             ));
         }
         let transit = if cur.lines > 0 { line_spacing } else { 0.0 };
@@ -462,17 +506,23 @@ pub fn plan(input: &PlanInput) -> Result<Plan> {
                 .into(),
         );
     }
-    if input.capture == CaptureMode::PhotoAtWaypoint && input.shots.iter().any(|s| s.pitch_deg > -80.0) {
+    if input.capture == CaptureMode::PhotoAtWaypoint
+        && input.shots.iter().any(|s| s.pitch_deg > -80.0)
+    {
         warnings.push(
             "Angled photos are for 3D models. The 2D map uses only the straight-down photos and skips the rest."
                 .into(),
         );
         if !input.shots.iter().any(|s| s.pitch_deg <= -80.0) {
-            warnings.push("No straight-down photo is included, so these photos can't make a 2D map.".into());
+            warnings.push(
+                "No straight-down photo is included, so these photos can't make a 2D map.".into(),
+            );
         }
     }
     if front < 0.6 || side < 0.5 {
-        warnings.push("Overlap below 60% front / 50% side often leaves gaps in the stitched map.".into());
+        warnings.push(
+            "Overlap below 60% front / 50% side often leaves gaps in the stitched map.".into(),
+        );
     }
 
     // Missions split by the waypoint limit are often short; pack them into
@@ -505,7 +555,11 @@ pub fn plan(input: &PlanInput) -> Result<Plan> {
         missions: missions.len(),
         batteries,
     };
-    Ok(Plan { missions, stats, warnings })
+    Ok(Plan {
+        missions,
+        stats,
+        warnings,
+    })
 }
 
 // ───────────────────────────── Litchi CSV ─────────────────────────────
@@ -582,7 +636,11 @@ pub fn litchi_csv(input: &PlanInput, mission: &Mission, speed_ms: f64) -> String
         }
         out.push_str(&format!(
             ",{alt_mode},{speed_ms:.1},0,0,0,0,-1,{}\n",
-            if w.photo_dist_m > 0.0 { format!("{:.1}", w.photo_dist_m) } else { "-1".into() }
+            if w.photo_dist_m > 0.0 {
+                format!("{:.1}", w.photo_dist_m)
+            } else {
+                "-1".into()
+            }
         ));
     }
     out
@@ -590,7 +648,11 @@ pub fn litchi_csv(input: &PlanInput, mission: &Mission, speed_ms: f64) -> String
 
 /// The route and boundary as KML, for checking in Google Earth before flying.
 pub fn plan_kml(input: &PlanInput, plan: &Plan) -> String {
-    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let esc = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    };
     let mut k = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<kml xmlns=\"http://www.opengis.net/kml/2.2\"><Document>\n",
     );
@@ -612,8 +674,11 @@ pub fn plan_kml(input: &PlanInput, plan: &Plan) -> String {
         AltitudeMode::AboveGround => "relativeToGround",
     };
     for (i, m) in plan.missions.iter().enumerate() {
-        let coords: Vec<String> =
-            m.waypoints.iter().map(|w| format!("{:.8},{:.8},{:.1}", w.lon, w.lat, input.altitude_m)).collect();
+        let coords: Vec<String> = m
+            .waypoints
+            .iter()
+            .map(|w| format!("{:.8},{:.8},{:.1}", w.lon, w.lat, input.altitude_m))
+            .collect();
         k.push_str(&format!(
             "<Placemark><name>Mission {} ({} photos, {:.0} min)</name><styleUrl>#route</styleUrl><LineString><altitudeMode>{alt_mode}</altitudeMode><coordinates>{}</coordinates></LineString></Placemark>\n",
             i + 1,
@@ -635,10 +700,14 @@ pub fn parse_kml_boundary(kml: &str) -> Result<Vec<(f64, f64)>> {
         .filter_map(|t| lower.find(t))
         .min()
         .unwrap_or(0);
-    let Some(rel) = lower[start_tag..].find("<coordinates") else { bail!("no shape found in that KML file") };
+    let Some(rel) = lower[start_tag..].find("<coordinates") else {
+        bail!("no shape found in that KML file")
+    };
     let open = start_tag + rel;
     let body_start = open + lower[open..].find('>').map(|i| i + 1).unwrap_or(0);
-    let Some(len) = lower[body_start..].find("</coordinates") else { bail!("the KML file is incomplete") };
+    let Some(len) = lower[body_start..].find("</coordinates") else {
+        bail!("the KML file is incomplete")
+    };
     let mut pts: Vec<(f64, f64)> = kml[body_start..body_start + len]
         .split_whitespace()
         .filter_map(|t| {
@@ -664,16 +733,29 @@ mod tests {
         let (lon0, lat0): (f64, f64) = (151.0, -33.9);
         let dlat = size_m / 111_320.0;
         let dlon = size_m / (111_320.0 * lat0.to_radians().cos());
-        vec![(lon0, lat0), (lon0 + dlon, lat0), (lon0 + dlon, lat0 + dlat), (lon0, lat0 + dlat)]
+        vec![
+            (lon0, lat0),
+            (lon0 + dlon, lat0),
+            (lon0 + dlon, lat0 + dlat),
+            (lon0, lat0 + dlat),
+        ]
     }
 
     #[test]
     fn square_survey_has_expected_geometry() {
-        let input = PlanInput { boundary: square(300.0), direction_deg: Some(90.0), ..Default::default() };
+        let input = PlanInput {
+            boundary: square(300.0),
+            direction_deg: Some(90.0),
+            ..Default::default()
+        };
         let p = plan(&input).unwrap();
         let s = &p.stats;
         // Mavic Air 2 at 80 m: footprint ≈ 113.8 × 85.3 m, GSD ≈ 2.84 cm.
-        assert!((s.footprint_w_m - 113.78).abs() < 0.1, "{}", s.footprint_w_m);
+        assert!(
+            (s.footprint_w_m - 113.78).abs() < 0.1,
+            "{}",
+            s.footprint_w_m
+        );
         assert!((s.gsd_cm - 2.84).abs() < 0.01, "{}", s.gsd_cm);
         assert!((s.area_m2 - 90_000.0).abs() < 900.0, "{}", s.area_m2);
         // 300 m across at 39.8 m spacing → 9 lines.
@@ -684,13 +766,20 @@ mod tests {
             assert!(m.duration_s <= input.battery_minutes * 60.0 + 1.0);
         }
         // East-west lines alternate heading 90 / 270.
-        let h: Vec<f64> = p.missions[0].waypoints.iter().map(|w| w.heading.round()).collect();
+        let h: Vec<f64> = p.missions[0]
+            .waypoints
+            .iter()
+            .map(|w| w.heading.round())
+            .collect();
         assert!(h.contains(&90.0) && h.contains(&270.0));
     }
 
     #[test]
     fn csv_has_one_row_per_waypoint_and_full_header() {
-        let input = PlanInput { boundary: square(150.0), ..Default::default() };
+        let input = PlanInput {
+            boundary: square(150.0),
+            ..Default::default()
+        };
         let p = plan(&input).unwrap();
         let csv = litchi_csv(&input, &p.missions[0], p.stats.speed_ms);
         let rows: Vec<&str> = csv.lines().collect();
@@ -705,9 +794,16 @@ mod tests {
     fn four_way_obliques_fit_litchi_action_limit() {
         let mut shots = nadir_only();
         for yaw in [0.0, 90.0, 180.0, 270.0] {
-            shots.push(Shot { pitch_deg: -45.0, yaw_offset_deg: yaw });
+            shots.push(Shot {
+                pitch_deg: -45.0,
+                yaw_offset_deg: yaw,
+            });
         }
-        let input = PlanInput { boundary: square(200.0), shots, ..Default::default() };
+        let input = PlanInput {
+            boundary: square(200.0),
+            shots,
+            ..Default::default()
+        };
         let p = plan(&input).unwrap();
         let a = waypoint_actions(&input, true, 90.0);
         assert!(a.len() <= LITCHI_MAX_ACTIONS, "{a:?}");
@@ -727,14 +823,27 @@ mod tests {
 
     #[test]
     fn too_many_shots_is_refused() {
-        let shots = (0..8).map(|i| Shot { pitch_deg: -30.0 - i as f64, yaw_offset_deg: i as f64 * 45.0 }).collect();
-        let input = PlanInput { boundary: square(200.0), shots, ..Default::default() };
+        let shots = (0..8)
+            .map(|i| Shot {
+                pitch_deg: -30.0 - i as f64,
+                yaw_offset_deg: i as f64 * 45.0,
+            })
+            .collect();
+        let input = PlanInput {
+            boundary: square(200.0),
+            shots,
+            ..Default::default()
+        };
         assert!(plan(&input).unwrap_err().to_string().contains("15"));
     }
 
     #[test]
     fn interval_mode_uses_two_waypoints_per_line() {
-        let input = PlanInput { boundary: square(300.0), capture: CaptureMode::DistanceInterval, ..Default::default() };
+        let input = PlanInput {
+            boundary: square(300.0),
+            capture: CaptureMode::DistanceInterval,
+            ..Default::default()
+        };
         let p = plan(&input).unwrap();
         let wps: usize = p.missions.iter().map(|m| m.waypoints.len()).sum();
         assert_eq!(wps, p.stats.lines * 2);

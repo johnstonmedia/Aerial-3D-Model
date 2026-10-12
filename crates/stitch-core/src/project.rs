@@ -51,7 +51,11 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { output_scale: 1.0, profile: None, neighbours: 10 }
+        Self {
+            output_scale: 1.0,
+            profile: None,
+            neighbours: 10,
+        }
     }
 }
 
@@ -88,13 +92,20 @@ pub fn fingerprint(path: &Path) -> Result<String> {
     };
     feed(&md.len().to_le_bytes());
     feed(&mtime.to_le_bytes());
-    feed(path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default().as_bytes());
+    feed(
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+            .as_bytes(),
+    );
     Ok(format!("{h:016x}"))
 }
 
 pub fn is_photo(path: &Path) -> bool {
     matches!(
-        path.extension().map(|e| e.to_string_lossy().to_lowercase()).as_deref(),
+        path.extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .as_deref(),
         Some("jpg" | "jpeg" | "png" | "tif" | "tiff")
     )
 }
@@ -127,7 +138,10 @@ impl Project {
         if file.format > FORMAT_VERSION {
             bail!("this project was made by a newer version of the app");
         }
-        Ok(Project { dir: dir.to_path_buf(), file })
+        Ok(Project {
+            dir: dir.to_path_buf(),
+            file,
+        })
     }
 
     /// Writes atomically (temp file + rename) so a crash can't leave a
@@ -181,17 +195,27 @@ impl Project {
         let mut failed = Vec::new();
         // The same photo copied to another folder has the same fingerprint
         // (name, size, modified time): keep the one already in the project.
-        let mut keys: std::collections::HashSet<String> = self.file.photos.iter().map(|p| p.key.clone()).collect();
+        let mut keys: std::collections::HashSet<String> =
+            self.file.photos.iter().map(|p| p.key.clone()).collect();
         for (path, r) in read {
             match r {
                 Ok((key, _)) if keys.contains(&key) => {
-                    failed.push((path, "skipped: the same photo is already in the project".to_string()));
+                    failed.push((
+                        path,
+                        "skipped: the same photo is already in the project".to_string(),
+                    ));
                 }
                 Ok((key, meta)) => {
                     keys.insert(key.clone());
                     let id = self.file.next_id;
                     self.file.next_id += 1;
-                    self.file.photos.push(PhotoEntry { id, path, key, meta, enabled: true });
+                    self.file.photos.push(PhotoEntry {
+                        id,
+                        path,
+                        key,
+                        meta,
+                        enabled: true,
+                    });
                     added += 1;
                 }
                 Err(e) => failed.push((path, format!("{e:#}"))),

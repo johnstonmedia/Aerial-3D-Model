@@ -42,7 +42,12 @@ pub fn levels(m: &Manifest) -> Vec<LevelInfo> {
         .rev()
         .map(|z| {
             let f = 1u64 << (m.max_zoom - z);
-            LevelInfo { zoom: z, width: m.width.div_ceil(f), height: m.height.div_ceil(f), gsd: m.gsd * f as f64 }
+            LevelInfo {
+                zoom: z,
+                width: m.width.div_ceil(f),
+                height: m.height.div_ceil(f),
+                gsd: m.gsd * f as f64,
+            }
         })
         .collect()
 }
@@ -134,8 +139,15 @@ pub fn export(project: &Project, opts: &ExportOptions, ctx: &Ctx) -> Result<Path
 
 /// ESRI world file: lets GIS tools place a PNG/JPEG without GeoTIFF tags.
 fn write_world_file(path: &Path, ext: &str, m: &Manifest, gsd: f64) -> Result<()> {
-    let (Some(l), Some(t)) = (m.utm_left, m.utm_top) else { return Ok(()) };
-    let text = format!("{gsd:.6}\n0\n0\n{:.6}\n{:.4}\n{:.4}\n", -gsd, l + gsd / 2.0, t - gsd / 2.0);
+    let (Some(l), Some(t)) = (m.utm_left, m.utm_top) else {
+        return Ok(());
+    };
+    let text = format!(
+        "{gsd:.6}\n0\n0\n{:.6}\n{:.4}\n{:.4}\n",
+        -gsd,
+        l + gsd / 2.0,
+        t - gsd / 2.0
+    );
     std::fs::write(path.with_extension(ext), text)?;
     Ok(())
 }
@@ -177,15 +189,29 @@ fn geo_tags<W: std::io::Write + std::io::Seek, K: tiff::encoder::TiffKind>(
     gsd: f64,
 ) -> Result<()> {
     use tiff::tags::Tag;
-    let (Some(l), Some(t), Some(epsg)) = (m.utm_left, m.utm_top, m.epsg) else { return Ok(()) };
+    let (Some(l), Some(t), Some(epsg)) = (m.utm_left, m.utm_top, m.epsg) else {
+        return Ok(());
+    };
     dir.write_tag(Tag::Unknown(33550), &[gsd, gsd, 0.0][..])?; // ModelPixelScale
     dir.write_tag(Tag::Unknown(33922), &[0.0, 0.0, 0.0, l, t, 0.0][..])?; // ModelTiepoint
-    // GeoKeyDirectory: version 1.1.0, 3 keys.
+                                                                          // GeoKeyDirectory: version 1.1.0, 3 keys.
     let keys: [u16; 16] = [
-        1, 1, 0, 3, //
-        1024, 0, 1, 1, // GTModelType = projected
-        1025, 0, 1, 1, // GTRasterType = PixelIsArea
-        3072, 0, 1, epsg as u16, // ProjectedCSType = EPSG
+        1,
+        1,
+        0,
+        3, //
+        1024,
+        0,
+        1,
+        1, // GTModelType = projected
+        1025,
+        0,
+        1,
+        1, // GTRasterType = PixelIsArea
+        3072,
+        0,
+        1,
+        epsg as u16, // ProjectedCSType = EPSG
     ];
     dir.write_tag(Tag::Unknown(34735), &keys[..])?;
     Ok(())

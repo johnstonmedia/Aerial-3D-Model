@@ -33,24 +33,63 @@ pub struct LinearSystem {
 
 impl LinearSystem {
     pub fn new(images: usize) -> Self {
-        Self { n: images * 4, rows: Vec::new() }
+        Self {
+            n: images * 4,
+            rows: Vec::new(),
+        }
     }
 
     fn push(&mut self, terms: &[(usize, f64)], rhs: f64, w: f64) {
         let mut entries = [Entry { col: 0, val: 0.0 }; 8];
         for (k, &(c, v)) in terms.iter().enumerate() {
-            entries[k] = Entry { col: c as u32, val: v * w };
+            entries[k] = Entry {
+                col: c as u32,
+                val: v * w,
+            };
         }
-        self.rows.push(Row { entries, len: terms.len() as u8, rhs: rhs * w });
+        self.rows.push(Row {
+            entries,
+            len: terms.len() as u8,
+            rhs: rhs * w,
+        });
     }
 
     /// Point `(u, v)` in photo `i` and `(s, t)` in photo `j` are the same ground point.
-    pub fn add_match(&mut self, i: usize, (u, v): (f64, f64), j: usize, (s, t): (f64, f64), w: f64) {
+    pub fn add_match(
+        &mut self,
+        i: usize,
+        (u, v): (f64, f64),
+        j: usize,
+        (s, t): (f64, f64),
+        w: f64,
+    ) {
         let (bi, bj) = (i * 4, j * 4);
         // x: a·u − b·v + tx
-        self.push(&[(bi, u), (bi + 1, -v), (bi + 2, 1.0), (bj, -s), (bj + 1, t), (bj + 2, -1.0)], 0.0, w);
+        self.push(
+            &[
+                (bi, u),
+                (bi + 1, -v),
+                (bi + 2, 1.0),
+                (bj, -s),
+                (bj + 1, t),
+                (bj + 2, -1.0),
+            ],
+            0.0,
+            w,
+        );
         // y: b·u + a·v + ty
-        self.push(&[(bi, v), (bi + 1, u), (bi + 3, 1.0), (bj, -t), (bj + 1, -s), (bj + 3, -1.0)], 0.0, w);
+        self.push(
+            &[
+                (bi, v),
+                (bi + 1, u),
+                (bi + 3, 1.0),
+                (bj, -t),
+                (bj + 1, -s),
+                (bj + 3, -1.0),
+            ],
+            0.0,
+            w,
+        );
     }
 
     /// Photo `i`'s centre lands at `(x, y)`.
@@ -95,12 +134,20 @@ impl LinearSystem {
                 diag[e.col as usize] += e.val * e.val;
             }
         }
-        let inv_d: Vec<f64> = diag.iter().map(|&d| if d > 0.0 { 1.0 / d } else { 0.0 }).collect();
+        let inv_d: Vec<f64> = diag
+            .iter()
+            .map(|&d| if d > 0.0 { 1.0 / d } else { 0.0 })
+            .collect();
 
         // r = Aᵀ(b − Ax)
         let mut ax = Vec::with_capacity(self.rows.len());
         a_times(&x, &mut ax);
-        let resid: Vec<f64> = self.rows.iter().zip(&ax).map(|(row, v)| row.rhs - v).collect();
+        let resid: Vec<f64> = self
+            .rows
+            .iter()
+            .zip(&ax)
+            .map(|(row, v)| row.rhs - v)
+            .collect();
         let mut r = vec![0.0; n];
         at_times(&resid, &mut r);
         let mut z: Vec<f64> = r.iter().zip(&inv_d).map(|(a, b)| a * b).collect();
@@ -134,7 +181,14 @@ impl LinearSystem {
                 p[k] = z[k] + beta * p[k];
             }
         }
-        x.chunks_exact(4).map(|c| Sim2 { a: c[0], b: c[1], tx: c[2], ty: c[3] }).collect()
+        x.chunks_exact(4)
+            .map(|c| Sim2 {
+                a: c[0],
+                b: c[1],
+                tx: c[2],
+                ty: c[3],
+            })
+            .collect()
     }
 }
 
@@ -146,14 +200,32 @@ mod tests {
     fn recovers_three_photo_strip() {
         // Ground truth: photos 100 units apart, the middle one rotated 90°.
         let truth = [
-            Sim2 { a: 0.1, b: 0.0, tx: 0.0, ty: 0.0 },
-            Sim2 { a: 0.0, b: 0.1, tx: 50.0, ty: 3.0 },
-            Sim2 { a: 0.1, b: 0.0, tx: 100.0, ty: 0.0 },
+            Sim2 {
+                a: 0.1,
+                b: 0.0,
+                tx: 0.0,
+                ty: 0.0,
+            },
+            Sim2 {
+                a: 0.0,
+                b: 0.1,
+                tx: 50.0,
+                ty: 3.0,
+            },
+            Sim2 {
+                a: 0.1,
+                b: 0.0,
+                tx: 100.0,
+                ty: 0.0,
+            },
         ];
         let mut sys = LinearSystem::new(3);
         for (i, j) in [(0, 1), (1, 2)] {
             for k in 0..20 {
-                let g = ((k as f64) * 13.0 % 40.0 + 10.0 + 50.0 * i as f64, (k as f64 * 7.0) % 30.0 - 15.0);
+                let g = (
+                    (k as f64) * 13.0 % 40.0 + 10.0 + 50.0 * i as f64,
+                    (k as f64 * 7.0) % 30.0 - 15.0,
+                );
                 let pi = truth[i].inverse().apply(g.0, g.1);
                 let pj = truth[j].inverse().apply(g.0, g.1);
                 sys.add_match(i, pi, j, pj, 1.0);
@@ -168,6 +240,9 @@ mod tests {
         let got = sys.solve(&[Sim2::IDENTITY; 3], 5000);
         let rel = got[0].inverse().compose(&got[1]);
         let rel_t = truth[0].inverse().compose(&truth[1]);
-        assert!((rel.a - rel_t.a).abs() < 1e-3 && (rel.b - rel_t.b).abs() < 1e-3, "{rel:?} vs {rel_t:?}");
+        assert!(
+            (rel.a - rel_t.a).abs() < 1e-3 && (rel.b - rel_t.b).abs() < 1e-3,
+            "{rel:?} vs {rel_t:?}"
+        );
     }
 }

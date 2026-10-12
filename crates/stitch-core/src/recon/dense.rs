@@ -32,9 +32,24 @@ pub struct DenseParams {
 impl DenseParams {
     pub fn for_profile(p: &Profile) -> Self {
         match p.kind {
-            ProfileKind::Lite => Self { size: 640, iterations: 3, neighbours: 3, max_points: 2_000_000 },
-            ProfileKind::Standard => Self { size: 960, iterations: 4, neighbours: 4, max_points: 5_000_000 },
-            ProfileKind::High => Self { size: 1400, iterations: 5, neighbours: 5, max_points: 12_000_000 },
+            ProfileKind::Lite => Self {
+                size: 640,
+                iterations: 3,
+                neighbours: 3,
+                max_points: 2_000_000,
+            },
+            ProfileKind::Standard => Self {
+                size: 960,
+                iterations: 4,
+                neighbours: 4,
+                max_points: 5_000_000,
+            },
+            ProfileKind::High => Self {
+                size: 1400,
+                iterations: 5,
+                neighbours: 5,
+                max_points: 12_000_000,
+            },
         }
     }
 }
@@ -115,12 +130,27 @@ fn load_view(dir: &PathBuf, sp: &Sparse, ci: usize, size: usize) -> Result<View>
     if buf.len() != 8 + n * 7 {
         bail!("damaged cache file for {}", c.path.display());
     }
-    let gray = buf[8..8 + n * 4].chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+    let gray = buf[8..8 + n * 4]
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .collect();
     let rgb = buf[8 + n * 4..].to_vec();
     let full = sp.intrinsics[c.group];
     let s = w as f64 / full.width as f64;
-    let k = Intrinsics { f: full.f * s, cx: full.cx * s, cy: full.cy * s, ..full };
-    Ok(View { w, h, gray, rgb, k, pose: c.pose })
+    let k = Intrinsics {
+        f: full.f * s,
+        cx: full.cx * s,
+        cy: full.cy * s,
+        ..full
+    };
+    Ok(View {
+        w,
+        h,
+        gray,
+        rgb,
+        k,
+        pose: c.pose,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -198,7 +228,9 @@ impl Ctx2<'_> {
                     ok = false;
                     break;
                 }
-                let u = s.v.k.distort(Vector2::new((xs[0] / xs[2]) as f64, (xs[1] / xs[2]) as f64));
+                let u =
+                    s.v.k
+                        .distort(Vector2::new((xs[0] / xs[2]) as f64, (xs[1] / xs[2]) as f64));
                 match s.v.gray_at(u.x as f32, u.y as f32) {
                     Some(g) => sv[j] = g,
                     None => {
@@ -223,7 +255,11 @@ impl Ctx2<'_> {
         let m = self.srcs.len().min(8);
         let cs = &mut costs[..m];
         cs.sort_by(f32::total_cmp);
-        if m >= 2 { (cs[0] + cs[1]) * 0.5 } else { cs[0] }
+        if m >= 2 {
+            (cs[0] + cs[1]) * 0.5
+        } else {
+            cs[0]
+        }
     }
 }
 
@@ -277,7 +313,12 @@ fn depth_path(dir: &PathBuf, key: &str, size: usize) -> PathBuf {
 }
 
 /// PatchMatch for one reference photo. Returns (depth, cost) per pixel.
-fn depth_map(dir: &PathBuf, sp: &Sparse, ci: usize, prm: &DenseParams) -> Result<Option<(usize, usize, Vec<f32>)>> {
+fn depth_map(
+    dir: &PathBuf,
+    sp: &Sparse,
+    ci: usize,
+    prm: &DenseParams,
+) -> Result<Option<(usize, usize, Vec<f32>)>> {
     let cam = &sp.cameras[ci];
     let rf = load_view(dir, sp, ci, prm.size)?;
     let nbrs: Vec<usize> = cam
@@ -294,11 +335,15 @@ fn depth_map(dir: &PathBuf, sp: &Sparse, ci: usize, prm: &DenseParams) -> Result
     if nbrs.is_empty() {
         return Ok(None);
     }
-    let views: Vec<View> = nbrs.iter().map(|&j| load_view(dir, sp, j, prm.size)).collect::<Result<_>>()?;
+    let views: Vec<View> = nbrs
+        .iter()
+        .map(|&j| load_view(dir, sp, j, prm.size))
+        .collect::<Result<_>>()?;
     let (w, h) = (rf.w, rf.h);
     let rays: Vec<[f32; 2]> = (0..w * h)
         .map(|i| {
-            let p = rf.k.undistort(Vector2::new((i % w) as f64 + 0.5, (i / w) as f64 + 0.5));
+            let p =
+                rf.k.undistort(Vector2::new((i % w) as f64 + 0.5, (i / w) as f64 + 0.5));
             [p.x as f32, p.y as f32]
         })
         .collect();
@@ -309,7 +354,11 @@ fn depth_map(dir: &PathBuf, sp: &Sparse, ci: usize, prm: &DenseParams) -> Result
             Src { v, r, t }
         })
         .collect();
-    let ctx2 = Ctx2 { rf: &rf, rays: &rays, srcs };
+    let ctx2 = Ctx2 {
+        rf: &rf,
+        rays: &rays,
+        srcs,
+    };
     let (dmin, dmax) = (cam.depth_range.0.max(0.5) as f32, cam.depth_range.1 as f32);
     let (imin, imax) = (1.0 / dmax, 1.0 / dmin);
 
@@ -351,7 +400,16 @@ fn depth_map(dir: &PathBuf, sp: &Sparse, ci: usize, prm: &DenseParams) -> Result
             mean_sd(&v).1 >= TEXTURE_MIN
         })
         .collect();
-    const CAND: [(i32, i32); 8] = [(-1, 0), (1, 0), (0, -1), (0, 1), (-5, 0), (5, 0), (0, -5), (0, 5)];
+    const CAND: [(i32, i32); 8] = [
+        (-1, 0),
+        (1, 0),
+        (0, -1),
+        (0, 1),
+        (-5, 0),
+        (5, 0),
+        (0, -5),
+        (0, 5),
+    ];
     for it in 0..prm.iterations {
         let range = 0.5f32.powi(it as i32);
         for parity in 0..2usize {
@@ -385,10 +443,16 @@ fn depth_map(dir: &PathBuf, sp: &Sparse, ci: usize, prm: &DenseParams) -> Result
                         }
                     }
                     // Random refinement, narrowing each iteration.
-                    let mut s = ((i as u64) << 8 ^ (it as u64 * 2 + parity as u64)).wrapping_mul(0x2545_F491_4F6C_DD1D) | 1;
+                    let mut s = ((i as u64) << 8 ^ (it as u64 * 2 + parity as u64))
+                        .wrapping_mul(0x2545_F491_4F6C_DD1D)
+                        | 1;
                     for _ in 0..2 {
                         let id = 1.0 / best.d + (rnd(&mut s) - 0.5) * range * 0.25 * (imax - imin);
-                        let d = if id > imin * 0.5 && id < imax * 1.5 { 1.0 / id } else { best.d };
+                        let d = if id > imin * 0.5 && id < imax * 1.5 {
+                            1.0 / id
+                        } else {
+                            best.d
+                        };
                         let n = random_normal(&mut s, rays[i], Some(best.n), 0.25 * range);
                         let mut hy = Hyp { d, n, cost: 2.0 };
                         hy.cost = ctx2.cost(x, y, &hy);
@@ -403,7 +467,13 @@ fn depth_map(dir: &PathBuf, sp: &Sparse, ci: usize, prm: &DenseParams) -> Result
     }
     let depth: Vec<f32> = st
         .iter()
-        .map(|hy| if hy.cost < 0.45 && hy.d >= dmin * 0.7 && hy.d <= dmax * 1.4 { hy.d } else { 0.0 })
+        .map(|hy| {
+            if hy.cost < 0.45 && hy.d >= dmin * 0.7 && hy.d <= dmax * 1.4 {
+                hy.d
+            } else {
+                0.0
+            }
+        })
         .collect();
     Ok(Some((w, h, depth)))
 }
@@ -425,8 +495,16 @@ fn load_depth(path: &PathBuf) -> Option<(usize, usize, Vec<f32>)> {
     let b = std::fs::read(path).ok()?;
     let w = u32::from_le_bytes(b.get(0..4)?.try_into().ok()?) as usize;
     let h = u32::from_le_bytes(b.get(4..8)?.try_into().ok()?) as usize;
-    (b.len() == 8 + w * h * 4)
-        .then(|| (w, h, b[8..].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()))
+    (b.len() == 8 + w * h * 4).then(|| {
+        (
+            w,
+            h,
+            b[8..]
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect(),
+        )
+    })
 }
 
 pub struct DenseCloud {
@@ -435,7 +513,12 @@ pub struct DenseCloud {
     pub voxel_m: f64,
 }
 
-pub fn reconstruct_dense(project: &Project, sp: &Sparse, profile: &Profile, ctx: &Ctx) -> Result<DenseCloud> {
+pub fn reconstruct_dense(
+    project: &Project,
+    sp: &Sparse,
+    profile: &Profile,
+    ctx: &Ctx,
+) -> Result<DenseCloud> {
     let prm = DenseParams::for_profile(profile);
     let dir = prepare_views(project, sp, &prm, ctx)?;
     let n = sp.cameras.len();
@@ -465,21 +548,29 @@ pub fn reconstruct_dense(project: &Project, sp: &Sparse, profile: &Profile, ctx:
     ys.sort_by(f64::total_cmp);
     let pct = |v: &[f64], q: f64| v[((v.len() - 1) as f64 * q) as usize];
     let area = ((pct(&xs, 0.99) - pct(&xs, 0.01)) * (pct(&ys, 0.99) - pct(&ys, 0.01))).max(1.0);
-    let mut depths: Vec<f64> = sp.cameras.iter().map(|c| (c.depth_range.0 + c.depth_range.1) / 2.0).collect();
+    let mut depths: Vec<f64> = sp
+        .cameras
+        .iter()
+        .map(|c| (c.depth_range.0 + c.depth_range.1) / 2.0)
+        .collect();
     depths.sort_by(f64::total_cmp);
-    let f0 = sp.intrinsics[0].f * prm.size as f64 / sp.intrinsics[0].width.max(sp.intrinsics[0].height) as f64;
+    let f0 = sp.intrinsics[0].f * prm.size as f64
+        / sp.intrinsics[0].width.max(sp.intrinsics[0].height) as f64;
     let gsd_dense = depths[depths.len() / 2] / f0;
     // Surfaces seen from above and the side: allow ~2.5 points per m² of plan
     // area per unit of the finest spacing.
     let voxel = (gsd_dense * 1.5).max((area * 2.5 / prm.max_points as f64).sqrt());
     let inv = 1.0 / voxel;
 
-    let grid: std::sync::Mutex<HashMap<(i32, i32, i32), [f32; 7]>> = std::sync::Mutex::new(HashMap::new());
+    let grid: std::sync::Mutex<HashMap<(i32, i32, i32), [f32; 7]>> =
+        std::sync::Mutex::new(HashMap::new());
     let fused = AtomicUsize::new(0);
     (0..n).into_par_iter().try_for_each(|ci| -> Result<()> {
         ctx.check()?;
         let cam = &sp.cameras[ci];
-        let Some((w, h, d)) = load_depth(&depth_path(&dir, &cam.key, prm.size)) else { return Ok(()) };
+        let Some((w, h, d)) = load_depth(&depth_path(&dir, &cam.key, prm.size)) else {
+            return Ok(());
+        };
         let rf = load_view(&dir, sp, ci, prm.size)?;
         let nb: Vec<(usize, View, (usize, usize, Vec<f32>))> = cam
             .neighbours
@@ -522,7 +613,11 @@ pub fn reconstruct_dense(project: &Project, sp: &Sparse, profile: &Profile, ctx:
                 if agree < need {
                     continue;
                 }
-                let key = ((xw.x * inv).floor() as i32, (xw.y * inv).floor() as i32, (xw.z * inv).floor() as i32);
+                let key = (
+                    (xw.x * inv).floor() as i32,
+                    (xw.y * inv).floor() as i32,
+                    (xw.z * inv).floor() as i32,
+                );
                 let c = &rf.rgb[(y * w + x) * 3..(y * w + x) * 3 + 3];
                 let e = local.entry(key).or_insert([0.0; 7]);
                 e[0] += xw.x as f32;
@@ -559,7 +654,11 @@ pub fn reconstruct_dense(project: &Project, sp: &Sparse, profile: &Profile, ctx:
     // originals in seconds if a later run needs them; the depth maps (the
     // expensive part) stay cached.
     remove_views(&dir);
-    Ok(DenseCloud { points, colors, voxel_m: voxel })
+    Ok(DenseCloud {
+        points,
+        colors,
+        voxel_m: voxel,
+    })
 }
 
 fn remove_views(dir: &PathBuf) {

@@ -70,7 +70,12 @@ fn linearise(p: &Problem, o: &Obs, sigma: f64) -> Option<Lin> {
     let e = o.u - pred;
     // du/dp = f (d I + 2 (k1 + 2 k2 r2) p pᵀ)
     let c = 2.0 * (k.k1 + 2.0 * k.k2 * r2);
-    let dudp = nalgebra::Matrix2::new(d + c * pn.x * pn.x, c * pn.x * pn.y, c * pn.x * pn.y, d + c * pn.y * pn.y) * k.f;
+    let dudp = nalgebra::Matrix2::new(
+        d + c * pn.x * pn.x,
+        c * pn.x * pn.y,
+        c * pn.x * pn.y,
+        d + c * pn.y * pn.y,
+    ) * k.f;
     let dpdx = M23::new(iz, 0.0, -xc.x * iz * iz, 0.0, iz, -xc.y * iz * iz);
     let dudx = dudp * dpdx; // 2×3, w.r.t. camera-frame point
     let j_rot = dudx * (-skew(&xc));
@@ -80,7 +85,14 @@ fn linearise(p: &Problem, o: &Obs, sigma: f64) -> Option<Lin> {
     jc.fixed_view_mut::<2, 3>(0, 0).copy_from(&j_rot);
     jc.fixed_view_mut::<2, 3>(0, 3).copy_from(&j_c);
     let jg = if p.refine_intrinsics {
-        M23::new(q.x, k.f * pn.x * r2, k.f * pn.x * r2 * r2, q.y, k.f * pn.y * r2, k.f * pn.y * r2 * r2)
+        M23::new(
+            q.x,
+            k.f * pn.x * r2,
+            k.f * pn.x * r2 * r2,
+            q.y,
+            k.f * pn.y * r2,
+            k.f * pn.y * r2 * r2,
+        )
     } else {
         M23::zeros()
     };
@@ -122,7 +134,9 @@ struct Sparse {
 
 impl Sparse {
     fn new(n: usize) -> Self {
-        Self { rows: (0..n).map(|_| HashMap::new()).collect() }
+        Self {
+            rows: (0..n).map(|_| HashMap::new()).collect(),
+        }
     }
     fn add(&mut self, i: usize, k: usize, m: &M6) {
         *self.rows[i].entry(k).or_insert_with(M6::zeros) += m;
@@ -205,7 +219,11 @@ pub fn bundle_adjust(p: &mut Problem, max_iter: usize, sigma_px: f64) -> BaStats
     for _ in 0..max_iter {
         iterations += 1;
         // ── Linearise ──
-        let lins: Vec<Option<Lin>> = p.obs.par_iter().map(|o| linearise(p, o, sigma_px)).collect();
+        let lins: Vec<Option<Lin>> = p
+            .obs
+            .par_iter()
+            .map(|o| linearise(p, o, sigma_px))
+            .collect();
 
         // ── Per-point blocks (parallel) ──
         struct PointSys {
@@ -232,7 +250,8 @@ pub fn bundle_adjust(p: &mut Problem, max_iter: usize, sigma_px: f64) -> BaStats
                     y.push((o.cam as usize, yc));
                     if p.refine_intrinsics {
                         let mut yg = M63::zeros();
-                        yg.fixed_view_mut::<3, 3>(0, 0).copy_from(&(l.jg.transpose() * l.jp * l.w));
+                        yg.fixed_view_mut::<3, 3>(0, 0)
+                            .copy_from(&(l.jg.transpose() * l.jp * l.w));
                         let g = nc + p.group[o.cam as usize];
                         match y.iter_mut().find(|(b, _)| *b == g) {
                             Some((_, m)) => *m += yg,
@@ -299,7 +318,8 @@ pub fn bundle_adjust(p: &mut Problem, max_iter: usize, sigma_px: f64) -> BaStats
             }
         }
         for ps in point_sys.iter().flatten() {
-            let vy: Vec<SMatrix<f64, 3, 6>> = ps.y.iter().map(|(_, y)| ps.vinv * y.transpose()).collect();
+            let vy: Vec<SMatrix<f64, 3, 6>> =
+                ps.y.iter().map(|(_, y)| ps.vinv * y.transpose()).collect();
             for (a, (ba, ya)) in ps.y.iter().enumerate() {
                 g[*ba] -= ya * (ps.vinv * ps.v);
                 for (bidx, (bb, _)) in ps.y.iter().enumerate() {
@@ -363,7 +383,11 @@ pub fn bundle_adjust(p: &mut Problem, max_iter: usize, sigma_px: f64) -> BaStats
         }
     }
     let (_, final_rms, _) = robust_cost(p, sigma_px);
-    BaStats { iterations, initial_rms, final_rms }
+    BaStats {
+        iterations,
+        initial_rms,
+        final_rms,
+    }
 }
 
 #[cfg(test)]
@@ -374,17 +398,32 @@ mod tests {
     /// poses, focal length off by 3% — BA must recover sub-pixel reprojection.
     #[test]
     fn recovers_perturbed_survey() {
-        let truth_k = Intrinsics { f: 3000.0, cx: 2000.0, cy: 1500.0, k1: -0.03, k2: 0.0, width: 4000, height: 3000 };
+        let truth_k = Intrinsics {
+            f: 3000.0,
+            cx: 2000.0,
+            cy: 1500.0,
+            k1: -0.03,
+            k2: 0.0,
+            width: 4000,
+            height: 3000,
+        };
         let mut truth = Vec::new();
         for r in 0..3 {
             for c in 0..4 {
                 let yaw = if r % 2 == 0 { 90.0 } else { 270.0 };
-                truth.push(Pose::from_angles(V3::new(c as f64 * 25.0, r as f64 * 35.0, 80.0), yaw, -90.0, 0.0));
+                truth.push(Pose::from_angles(
+                    V3::new(c as f64 * 25.0, r as f64 * 35.0, 80.0),
+                    yaw,
+                    -90.0,
+                    0.0,
+                ));
             }
         }
         let mut s: u64 = 99;
         let mut rnd = || {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((s >> 11) as f64 / (1u64 << 53) as f64) - 0.5
         };
         let mut points = Vec::new();
@@ -405,7 +444,11 @@ mod tests {
             let pt = points.len() as u32;
             points.push(x + V3::new(rnd(), rnd(), rnd()) * 2.0);
             for (i, u) in views {
-                obs.push(Obs { cam: i as u32, pt, u: u + Vector2::new(rnd(), rnd()) * 0.5 });
+                obs.push(Obs {
+                    cam: i as u32,
+                    pt,
+                    u: u + Vector2::new(rnd(), rnd()) * 0.5,
+                });
             }
         }
         let poses: Vec<Pose> = truth
@@ -415,7 +458,15 @@ mod tests {
                 c: t.c + V3::new(rnd(), rnd(), rnd()) * 3.0,
             })
             .collect();
-        let prior = truth.iter().map(|t| Some((t.c + V3::new(rnd(), rnd(), rnd()) * 1.0, V3::new(2.0, 2.0, 3.0)))).collect();
+        let prior = truth
+            .iter()
+            .map(|t| {
+                Some((
+                    t.c + V3::new(rnd(), rnd(), rnd()) * 1.0,
+                    V3::new(2.0, 2.0, 3.0),
+                ))
+            })
+            .collect();
         let mut k0 = truth_k;
         k0.f *= 1.03;
         k0.k1 = 0.0;
@@ -434,6 +485,10 @@ mod tests {
         // Nadir photos at one height can't separate focal length from flying
         // height (both scale the image alike), so f is only pinned as well as
         // the altitude prior allows. Angled photos break that tie.
-        assert!((p.intr[0].f / truth_k.f - 1.0).abs() < 0.025, "f = {}", p.intr[0].f);
+        assert!(
+            (p.intr[0].f / truth_k.f - 1.0).abs() < 0.025,
+            "f = {}",
+            p.intr[0].f
+        );
     }
 }

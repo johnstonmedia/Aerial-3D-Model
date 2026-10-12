@@ -7,6 +7,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { mountPlanner } from "./planner";
 import { mountViewer3D, MeasureEvent, Tool, Viewer3D } from "./viewer3d";
 import * as M from "./measure";
+import * as platform from "@platform";
 import {
   api,
   ExportFormat,
@@ -118,7 +119,7 @@ function homeView() {
     .map(
       (r) => `<button class="recent" data-open="${esc(r.dir)}">
         <span class="recent-name">${esc(r.name)}</span>
-        <span class="recent-meta">${r.photos} photos · ${esc(r.dir)}</span>
+        <span class="recent-meta">${r.photos} photos${platform.IS_WEB ? "" : ` · ${esc(r.dir)}`}</span>
       </button>`,
     )
     .join("");
@@ -129,9 +130,11 @@ function homeView() {
       <h1>Aerial Stitch</h1>
       <p class="tag">Turn drone photos into one map — entirely on this computer.</p>
     </div>
+    ${platform.homeExtras()}
     <div class="home-actions">
       <button class="primary big" data-action="new">New project</button>
-      <button class="big" data-action="open">Open project…</button>
+      ${platform.IS_WEB ? "" : `<button class="big" data-action="open">Open project…</button>`}
+      ${platform.sampleLabel() ? `<button class="big" data-action="sample">${esc(platform.sampleLabel()!)}</button>` : ""}
     </div>
     <div class="home-actions" style="margin-top:12px">
       <button class="link" data-action="planner">✈ Plan a mapping flight (Litchi)</button>
@@ -139,7 +142,9 @@ function homeView() {
     ${recent ? `<h3 class="section">Recent</h3><div class="recent-list">${recent}</div>` : ""}
     ${
       s
-        ? `<div class="sys">${esc(s.os)} · ${esc(s.arch)} · ${s.ram_gb.toFixed(0)} GB RAM · ${s.cores} cores ·
+        ? platform.IS_WEB
+          ? `<div class="sys">Running in your browser · one CPU core · <b>${profileLabel(s.profile.kind)}</b> profile</div>`
+          : `<div class="sys">${esc(s.os)} · ${esc(s.arch)} · ${s.ram_gb.toFixed(0)} GB RAM · ${s.cores} cores ·
            <b>${profileLabel(s.profile.kind)}</b> profile</div>`
         : ""
     }
@@ -249,7 +254,7 @@ function projectView(p: ProjectView) {
         <button class="icon" data-action="home" title="All projects">‹</button>
         <div>
           <div class="pname">${esc(p.name)}</div>
-          <div class="dim small" title="${esc(p.dir)}">${esc(p.dir)}</div>
+          <div class="dim small" title="${esc(p.dir)}">${platform.IS_WEB ? "Kept in this browser tab only" : esc(p.dir)}</div>
         </div>
       </div>
       ${runPanel(p)}
@@ -617,20 +622,21 @@ function mount3d(p: ProjectView) {
     if (status) status.textContent = t;
   };
   const onMeasure = (e: MeasureEvent) => showMeasure(e, true);
-  if (showSurface(p)) {
+  const surface = showSurface(p);
+  // The viewer loads a lighter copy; "Export point cloud" saves the full one.
+  const file = surface ? "3d/model_view.glb" : m3.points ? "3d/view.ply" : "3d/sparse.ply";
+  void platform.assetUrl(p.dir, file, m3.version).then((url) => {
+    // The page may have moved on while the file was being fetched.
+    if (!el.isConnected || viewer) return;
     viewer = mountViewer3D(el, {
-      url: `${tileBase()}3d/model_view.glb?v=${m3.version}`,
-      kind: "glb",
-      offset: m3.mesh_offset ?? [0, 0, 0],
+      url,
+      kind: surface ? "glb" : "ply",
+      offset: surface ? (m3.mesh_offset ?? [0, 0, 0]) : undefined,
       onStatus,
       onMeasure,
     });
-  } else {
-    // The viewer loads a lighter copy; "Export point cloud" saves the full one.
-    const file = m3.points ? "view.ply" : "sparse.ply";
-    viewer = mountViewer3D(el, { url: `${tileBase()}3d/${file}?v=${m3.version}`, kind: "ply", onStatus, onMeasure });
-  }
-  viewer.setTool(state.tool);
+    viewer.setTool(state.tool);
+  });
   document.getElementById("v3d-size")?.addEventListener("input", (e) => {
     viewer?.setPointSize(Number((e.target as HTMLInputElement).value));
   });
@@ -646,11 +652,6 @@ function renderRun() {
 
 // ────────────────────────────── Map viewer ──────────────────────────────
 
-function tileBase() {
-  // Custom protocols are served as http://<scheme>.localhost on Windows.
-  return navigator.userAgent.includes("Windows") ? "http://tiles.localhost/" : "tiles://localhost/";
-}
-
 function mountMap(p: ProjectView) {
   const { layer, m: lm } = shownLayer(p);
   const m = lm!;
@@ -661,7 +662,7 @@ function mountMap(p: ProjectView) {
   const sw = map.unproject([0, m.height], m.max_zoom);
   const ne = map.unproject([m.width, 0], m.max_zoom);
   const bounds = L.latLngBounds(sw, ne);
-  L.tileLayer(`${tileBase()}${prefix}{z}/{x}/{y}.jpg?v=${m.version}`, {
+  platform.tileLayer(p.dir, prefix, m.version, {
     tileSize: m.tile_size,
     maxNativeZoom: m.max_zoom,
     maxZoom: m.max_zoom + 2,
@@ -777,6 +778,15 @@ async function openProject(dir?: string) {
   render();
 }
 
+/** Web demo: a small public drone survey, fetched on request. */
+async function loadSample() {
+  const photos = await platform.samplePhotos((t) => toast("info", t));
+  if (!photos.length) return;
+  state.project = await api.createProject(`/w/projects/${Date.now().toString(36)}/Sample survey`, "Sample survey");
+  render();
+  await addPaths(photos);
+}
+
 async function addPaths(paths: string[]) {
   const p = state.project;
   if (!p || !paths.length) return;
@@ -800,6 +810,8 @@ async function onAction(action: string) {
       return newProject();
     case "open":
       return openProject();
+    case "sample":
+      return loadSample();
     case "planner": {
       // Its own container, so the planner's listeners leave with it.
       const host = document.createElement("div");
@@ -998,6 +1010,12 @@ void getCurrentWebview().onDragDropEvent((e) => {
   if (e.payload.type === "drop" && state.project && !state.busy) {
     void guard(() => addPaths(e.payload.type === "drop" ? e.payload.paths : []));
   }
+});
+
+void listen("demo-reset", async () => {
+  state.project = null;
+  state.recent = await api.recentProjects();
+  render();
 });
 
 window.addEventListener("resize", () => {

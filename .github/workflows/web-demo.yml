@@ -1,0 +1,69 @@
+name: Web demo
+
+# Builds the browser demo — the same engine compiled to WebAssembly, under
+# the same UI — and publishes it to GitHub Pages:
+#   https://johnstonmedia.github.io/Aerial-3D-Model/
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm32-wasip1
+
+      - name: Build the engine (WebAssembly)
+        run: cargo build --release -p stitch-cli --target wasm32-wasip1
+
+      - name: Build the web app
+        working-directory: app
+        env:
+          DEMO_BASE: /${{ github.event.repository.name }}/
+        run: |
+          mkdir -p public-web
+          cp ../target/wasm32-wasip1/release/aerial-stitch.wasm public-web/
+          npm ci
+          npm run build:web
+
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: app/dist-web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

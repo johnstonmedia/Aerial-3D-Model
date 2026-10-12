@@ -37,9 +37,24 @@ struct Params {
 
 fn params(p: &Profile) -> Params {
     match p.kind {
-        ProfileKind::Lite => Params { max_vertices: 250_000, top_texels: 16 << 20, wall_pixels: 8 << 20, wall_mult: 3.0 },
-        ProfileKind::Standard => Params { max_vertices: 600_000, top_texels: 48 << 20, wall_pixels: 24 << 20, wall_mult: 2.0 },
-        ProfileKind::High => Params { max_vertices: 1_500_000, top_texels: 128 << 20, wall_pixels: 64 << 20, wall_mult: 1.5 },
+        ProfileKind::Lite => Params {
+            max_vertices: 250_000,
+            top_texels: 16 << 20,
+            wall_pixels: 8 << 20,
+            wall_mult: 3.0,
+        },
+        ProfileKind::Standard => Params {
+            max_vertices: 600_000,
+            top_texels: 48 << 20,
+            wall_pixels: 24 << 20,
+            wall_mult: 2.0,
+        },
+        ProfileKind::High => Params {
+            max_vertices: 1_500_000,
+            top_texels: 128 << 20,
+            wall_pixels: 64 << 20,
+            wall_mult: 1.5,
+        },
     }
 }
 
@@ -85,11 +100,23 @@ struct Tex {
 impl Tex {
     fn down(&self, f: usize) -> Tex {
         if f <= 1 {
-            return Tex { w: self.w, h: self.h, rgb: self.rgb.clone() };
+            return Tex {
+                w: self.w,
+                h: self.h,
+                rgb: self.rgb.clone(),
+            };
         }
-        let r = crate::imgops::Rgb { w: self.w, h: self.h, data: self.rgb.clone() };
+        let r = crate::imgops::Rgb {
+            w: self.w,
+            h: self.h,
+            data: self.rgb.clone(),
+        };
         let d = box_down(&r, f);
-        Tex { w: d.w, h: d.h, rgb: d.data }
+        Tex {
+            w: d.w,
+            h: d.h,
+            rgb: d.data,
+        }
     }
 }
 
@@ -123,14 +150,31 @@ pub fn build_mesh(
     let node = |gi: usize, gj: usize| -> Option<V3> {
         let (i, j) = ((gi * s).min(dsm.nx - 1), (gj * s).min(dsm.ny - 1));
         let z = dsm.at(i, j);
-        z.is_finite().then(|| V3::new(dsm.x0 + (i as f64 + 0.5) * dsm.cell, dsm.y0 + (j as f64 + 0.5) * dsm.cell, z as f64))
+        z.is_finite().then(|| {
+            V3::new(
+                dsm.x0 + (i as f64 + 0.5) * dsm.cell,
+                dsm.y0 + (j as f64 + 0.5) * dsm.cell,
+                z as f64,
+            )
+        })
     };
-    let verts: Vec<Option<V3>> = (0..gny).flat_map(|gj| (0..gnx).map(move |gi| (gi, gj))).map(|(gi, gj)| node(gi, gj)).collect();
+    let verts: Vec<Option<V3>> = (0..gny)
+        .flat_map(|gj| (0..gnx).map(move |gi| (gi, gj)))
+        .map(|(gi, gj)| node(gi, gj))
+        .collect();
     let mut tris: Vec<[usize; 3]> = Vec::new();
     for gj in 0..gny.saturating_sub(1) {
         for gi in 0..gnx.saturating_sub(1) {
-            let (a, b, c, d) = (gj * gnx + gi, gj * gnx + gi + 1, (gj + 1) * gnx + gi + 1, (gj + 1) * gnx + gi);
-            let (Some(pa), Some(pb), Some(pc), Some(pd)) = (verts[a], verts[b], verts[c], verts[d]) else { continue };
+            let (a, b, c, d) = (
+                gj * gnx + gi,
+                gj * gnx + gi + 1,
+                (gj + 1) * gnx + gi + 1,
+                (gj + 1) * gnx + gi,
+            );
+            let (Some(pa), Some(pb), Some(pc), Some(pd)) = (verts[a], verts[b], verts[c], verts[d])
+            else {
+                continue;
+            };
             // Split along the shorter diagonal: keeps roof edges sharp.
             if (pa - pc).norm() <= (pb - pd).norm() {
                 tris.push([a, b, c]);
@@ -145,14 +189,25 @@ pub fn build_mesh(
         bail!("the surface is too fragmented to mesh");
     }
     let normal = |t: &[usize; 3]| {
-        let (a, b, c) = (verts[t[0]].unwrap(), verts[t[1]].unwrap(), verts[t[2]].unwrap());
+        let (a, b, c) = (
+            verts[t[0]].unwrap(),
+            verts[t[1]].unwrap(),
+            verts[t[2]].unwrap(),
+        );
         (b - a).cross(&(c - a)).normalize()
     };
 
     // ── Wall faces: best photo that faces them and can see them ──
     let idx = CamIndex::new(sp, dsm);
-    let steep: Vec<usize> = (0..tris.len()).filter(|&k| normal(&tris[k]).z < STEEP_NZ).collect();
-    ctx.report("mesh", 1, 3, format!("Choosing photos for {} wall faces", steep.len()));
+    let steep: Vec<usize> = (0..tris.len())
+        .filter(|&k| normal(&tris[k]).z < STEEP_NZ)
+        .collect();
+    ctx.report(
+        "mesh",
+        1,
+        3,
+        format!("Choosing photos for {} wall faces", steep.len()),
+    );
     let wall_cam: Vec<Option<u32>> = steep
         .par_iter()
         .map(|&k| {
@@ -192,7 +247,10 @@ pub fn build_mesh(
             walls.push((k, c));
         }
     }
-    let walls_from_oblique = walls.iter().filter(|(_, c)| sp.cameras[*c as usize].oblique).count();
+    let walls_from_oblique = walls
+        .iter()
+        .filter(|(_, c)| sp.cameras[*c as usize].oblique)
+        .count();
 
     // ── Top texture: orthophoto at the finest level within budget ──
     let mut zt = ortho.max_zoom;
@@ -206,7 +264,10 @@ pub fn build_mesh(
     }
     let fz = (1u64 << (ortho.max_zoom - zt)) as f64;
     let gsd_z = ortho.gsd * fz;
-    let (wz, hz) = ((ortho.width as f64 / fz).ceil() as usize, (ortho.height as f64 / fz).ceil() as usize);
+    let (wz, hz) = (
+        (ortho.width as f64 / fz).ceil() as usize,
+        (ortho.height as f64 / fz).ceil() as usize,
+    );
     let cnx = wz.div_ceil(CHUNK);
     let cny = hz.div_ceil(CHUNK);
     let to_px = |p: &V3| ((p.x - ortho.left) / gsd_z, (ortho.top - p.y) / gsd_z);
@@ -235,14 +296,23 @@ pub fn build_mesh(
             // Texture covers the chunk plus a margin for straddling triangles.
             let x0 = (cx * CHUNK) as i64 - PAD as i64;
             let y0 = (cy * CHUNK) as i64 - PAD as i64;
-            let tw = (CHUNK + 2 * PAD).min(wz + PAD - (cx * CHUNK).min(wz)).max(1);
-            let th = (CHUNK + 2 * PAD).min(hz + PAD - (cy * CHUNK).min(hz)).max(1);
+            let tw = (CHUNK + 2 * PAD)
+                .min(wz + PAD - (cx * CHUNK).min(wz))
+                .max(1);
+            let th = (CHUNK + 2 * PAD)
+                .min(hz + PAD - (cy * CHUNK).min(hz))
+                .max(1);
             let mut rgb = vec![0u8; tw * th * 3];
             let (tx0, ty0) = ((x0.max(0) as usize) / TILE, (y0.max(0) as usize) / TILE);
-            let (tx1, ty1) = (((x0 + tw as i64).max(0) as usize) / TILE, ((y0 + th as i64).max(0) as usize) / TILE);
+            let (tx1, ty1) = (
+                ((x0 + tw as i64).max(0) as usize) / TILE,
+                ((y0 + th as i64).max(0) as usize) / TILE,
+            );
             for ty in ty0..=ty1 {
                 for tx in tx0..=tx1 {
-                    let Some(tile) = read_tile(ortho_root, zt, tx, ty)? else { continue };
+                    let Some(tile) = read_tile(ortho_root, zt, tx, ty)? else {
+                        continue;
+                    };
                     for yy in 0..TILE {
                         let gy = (ty * TILE + yy) as i64 - y0;
                         if gy < 0 || gy >= th as i64 {
@@ -270,7 +340,10 @@ pub fn build_mesh(
                         let p = verts[vi].unwrap();
                         let (px, py) = to_px(&p);
                         pos.push(p);
-                        uvs.push([((px - x0 as f64) / tw as f64) as f32, ((py - y0 as f64) / th as f64) as f32]);
+                        uvs.push([
+                            ((px - x0 as f64) / tw as f64) as f32,
+                            ((py - y0 as f64) / th as f64) as f32,
+                        ]);
                         (pos.len() - 1) as u32
                     });
                     ind.push(id);
@@ -303,18 +376,39 @@ pub fn build_mesh(
             .iter()
             .map(|&(k, cam)| {
                 let t = &tris[k];
-                let (a, b, c) = (verts[t[0]].unwrap(), verts[t[1]].unwrap(), verts[t[2]].unwrap());
+                let (a, b, c) = (
+                    verts[t[0]].unwrap(),
+                    verts[t[1]].unwrap(),
+                    verts[t[2]].unwrap(),
+                );
                 let n = (b - a).cross(&(c - a)).normalize();
                 let e1 = (b - a).normalize();
                 let e2 = n.cross(&e1);
-                let loc = [(0.0, 0.0), ((b - a).dot(&e1), (b - a).dot(&e2)), ((c - a).dot(&e1), (c - a).dot(&e2))];
+                let loc = [
+                    (0.0, 0.0),
+                    ((b - a).dot(&e1), (b - a).dot(&e2)),
+                    ((c - a).dot(&e1), (c - a).dot(&e2)),
+                ];
                 let minx = loc.iter().map(|p| p.0).fold(f64::MAX, f64::min);
                 let maxx = loc.iter().map(|p| p.0).fold(f64::MIN, f64::max);
                 let miny = loc.iter().map(|p| p.1).fold(f64::MAX, f64::min);
                 let maxy = loc.iter().map(|p| p.1).fold(f64::MIN, f64::max);
                 let w = (((maxx - minx) / wt).ceil() as usize + 3).min(PAGE);
                 let h = (((maxy - miny) / wt).ceil() as usize + 3).min(PAGE);
-                Patch { k, cam, a, e1, e2, min: (minx, miny), loc, w, h, page: 0, x: 0, y: 0 }
+                Patch {
+                    k,
+                    cam,
+                    a,
+                    e1,
+                    e2,
+                    min: (minx, miny),
+                    loc,
+                    w,
+                    h,
+                    page: 0,
+                    x: 0,
+                    y: 0,
+                }
             })
             .collect();
         let px: usize = v.iter().map(|p| p.w * p.h).sum();
@@ -347,8 +441,11 @@ pub fn build_mesh(
         patches = layout(wt).0;
     }
     let pages = patches.iter().map(|p| p.page + 1).max().unwrap_or(0);
-    let gsds: Vec<f64> =
-        sp.cameras.iter().map(|c| ((c.depth_range.0 + c.depth_range.1) / 2.0) / sp.intrinsics[c.group].f).collect();
+    let gsds: Vec<f64> = sp
+        .cameras
+        .iter()
+        .map(|c| ((c.depth_range.0 + c.depth_range.1) / 2.0) / sp.intrinsics[c.group].f)
+        .collect();
     let factor: Vec<usize> = gsds
         .iter()
         .map(|g| {
@@ -402,9 +499,14 @@ pub fn build_mesh(
     drop(cache);
     let first_wall_tex = textures.len();
     for _ in 0..pages {
-        textures.push(Tex { w: PAGE, h: PAGE, rgb: vec![110u8; PAGE * PAGE * 3] });
+        textures.push(Tex {
+            w: PAGE,
+            h: PAGE,
+            rgb: vec![110u8; PAGE * PAGE * 3],
+        });
     }
-    let mut wall_prims: Vec<(Vec<V3>, Vec<[f32; 2]>, Vec<u32>)> = vec![(Vec::new(), Vec::new(), Vec::new()); pages];
+    let mut wall_prims: Vec<(Vec<V3>, Vec<[f32; 2]>, Vec<u32>)> =
+        vec![(Vec::new(), Vec::new(), Vec::new()); pages];
     for (p, buf) in patches.iter().zip(&painted) {
         let tex = &mut textures[first_wall_tex + p.page];
         for yy in 0..p.h {
@@ -444,7 +546,13 @@ pub fn build_mesh(
         "local_offset": [off.x, off.y, off.z],
         "axes": "x east, y up, z south (glTF); add utm_origin to x and -z for UTM",
     });
-    let to_gltf = |p: &V3| [(p.x - off.x) as f32, (p.z - off.z) as f32, -(p.y - off.y) as f32];
+    let to_gltf = |p: &V3| {
+        [
+            (p.x - off.x) as f32,
+            (p.z - off.z) as f32,
+            -(p.y - off.y) as f32,
+        ]
+    };
     let total_texels: usize = textures.iter().map(|t| t.w * t.h).sum();
     let view_f = {
         let mut f = 1;
@@ -454,7 +562,10 @@ pub fn build_mesh(
         f
     };
     let write = |path: &Path, f: usize, q: u8| -> Result<()> {
-        let mut glb = Glb { extras: extras.clone(), ..Default::default() };
+        let mut glb = Glb {
+            extras: extras.clone(),
+            ..Default::default()
+        };
         for t in &textures {
             let d = t.down(f);
             glb.textures.push(encode_jpeg(&d.rgb, d.w, d.h, q)?);

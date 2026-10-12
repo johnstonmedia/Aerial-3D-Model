@@ -164,7 +164,15 @@ mod tests {
                 h[j * nx + i] = 8.0;
             }
         }
-        Dsm { x0: 0.0, y0: 0.0, cell, nx, ny, h, zmax: 10.0 }
+        Dsm {
+            x0: 0.0,
+            y0: 0.0,
+            cell,
+            nx,
+            ny,
+            h,
+            zmax: 10.0,
+        }
     }
 
     #[test]

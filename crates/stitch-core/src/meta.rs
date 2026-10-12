@@ -41,7 +41,11 @@ impl PhotoMeta {
 pub fn read_meta(path: &Path) -> Result<PhotoMeta> {
     let (width, height) =
         image::image_dimensions(path).with_context(|| format!("reading {}", path.display()))?;
-    let mut m = PhotoMeta { width, height, ..Default::default() };
+    let mut m = PhotoMeta {
+        width,
+        height,
+        ..Default::default()
+    };
 
     if let Ok(file) = std::fs::File::open(path) {
         let mut reader = BufReader::new(file);
@@ -62,17 +66,29 @@ fn read_exif(exif: &exif::Exif, m: &mut PhotoMeta) {
         _ => None,
     };
     let refc = |tag| {
-        exif.get_field(tag, In::PRIMARY)
-            .map(|f| f.display_value().to_string().trim_matches('"').to_uppercase())
+        exif.get_field(tag, In::PRIMARY).map(|f| {
+            f.display_value()
+                .to_string()
+                .trim_matches('"')
+                .to_uppercase()
+        })
     };
-    let dms = |v: Vec<f64>| -> Option<f64> {
-        (v.len() == 3).then(|| v[0] + v[1] / 60.0 + v[2] / 3600.0)
-    };
-    if let (Some(lat), Some(lon)) =
-        (rationals(Tag::GPSLatitude).and_then(dms), rationals(Tag::GPSLongitude).and_then(dms))
-    {
-        let lat = if refc(Tag::GPSLatitudeRef).is_some_and(|r| r.starts_with('S')) { -lat } else { lat };
-        let lon = if refc(Tag::GPSLongitudeRef).is_some_and(|r| r.starts_with('W')) { -lon } else { lon };
+    let dms =
+        |v: Vec<f64>| -> Option<f64> { (v.len() == 3).then(|| v[0] + v[1] / 60.0 + v[2] / 3600.0) };
+    if let (Some(lat), Some(lon)) = (
+        rationals(Tag::GPSLatitude).and_then(dms),
+        rationals(Tag::GPSLongitude).and_then(dms),
+    ) {
+        let lat = if refc(Tag::GPSLatitudeRef).is_some_and(|r| r.starts_with('S')) {
+            -lat
+        } else {
+            lat
+        };
+        let lon = if refc(Tag::GPSLongitudeRef).is_some_and(|r| r.starts_with('W')) {
+            -lon
+        } else {
+            lon
+        };
         if lat.is_finite() && lon.is_finite() && (lat != 0.0 || lon != 0.0) {
             m.lat = Some(lat);
             m.lon = Some(lon);
@@ -81,7 +97,8 @@ fn read_exif(exif: &exif::Exif, m: &mut PhotoMeta) {
     if let Some(v) = rationals(Tag::GPSAltitude) {
         if let Some(a) = v.first() {
             let below = matches!(
-                exif.get_field(Tag::GPSAltitudeRef, In::PRIMARY).and_then(|f| f.value.get_uint(0)),
+                exif.get_field(Tag::GPSAltitudeRef, In::PRIMARY)
+                    .and_then(|f| f.value.get_uint(0)),
                 Some(1)
             );
             m.alt = Some(if below { -a } else { *a });
@@ -95,7 +112,13 @@ fn read_exif(exif: &exif::Exif, m: &mut PhotoMeta) {
     }
     let text = |tag| {
         exif.get_field(tag, In::PRIMARY)
-            .map(|f| f.display_value().to_string().trim_matches('"').trim().to_string())
+            .map(|f| {
+                f.display_value()
+                    .to_string()
+                    .trim_matches('"')
+                    .trim()
+                    .to_string()
+            })
             .filter(|s| !s.is_empty())
     };
     m.make = text(Tag::Make);
@@ -107,7 +130,9 @@ fn read_exif(exif: &exif::Exif, m: &mut PhotoMeta) {
 
 fn read_head(path: &Path, max: usize) -> Result<String> {
     let mut buf = Vec::with_capacity(max);
-    std::fs::File::open(path)?.take(max as u64).read_to_end(&mut buf)?;
+    std::fs::File::open(path)?
+        .take(max as u64)
+        .read_to_end(&mut buf)?;
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
@@ -134,7 +159,10 @@ fn read_dji_xmp(xmp: &str, m: &mut PhotoMeta) {
     m.pitch = xmp_value(xmp, "GimbalPitchDegree");
     m.roll = xmp_value(xmp, "GimbalRollDegree");
     if m.lat.is_none() {
-        if let (Some(lat), Some(lon)) = (xmp_value(xmp, "GpsLatitude"), xmp_value(xmp, "GpsLongitude")) {
+        if let (Some(lat), Some(lon)) = (
+            xmp_value(xmp, "GpsLatitude"),
+            xmp_value(xmp, "GpsLongitude"),
+        ) {
             m.lat = Some(lat);
             m.lon = Some(lon);
         }

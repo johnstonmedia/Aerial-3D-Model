@@ -35,8 +35,22 @@ const BORDER: usize = 18;
 const ANGLE_BINS: usize = 30;
 
 const CIRCLE: [(i32, i32); 16] = [
-    (0, -3), (1, -3), (2, -2), (3, -1), (3, 0), (3, 1), (2, 2), (1, 3),
-    (0, 3), (-1, 3), (-2, 2), (-3, 1), (-3, 0), (-3, -1), (-2, -2), (-1, -3),
+    (0, -3),
+    (1, -3),
+    (2, -2),
+    (3, -1),
+    (3, 0),
+    (3, 1),
+    (2, 2),
+    (1, 3),
+    (0, 3),
+    (-1, 3),
+    (-2, 2),
+    (-3, 1),
+    (-3, 0),
+    (-3, -1),
+    (-2, -2),
+    (-1, -3),
 ];
 
 /// 256 point pairs, pre-rotated into `ANGLE_BINS` orientations.
@@ -47,7 +61,9 @@ fn patterns() -> &'static Vec<Vec<[(i8, i8); 2]>> {
         // cached features stay valid across runs.
         let mut s: u64 = 0x9E37_79B9_7F4A_7C15;
         let mut rnd = || {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((s >> 11) as f64) / ((1u64 << 53) as f64)
         };
         let mut gauss = || {
@@ -71,7 +87,10 @@ fn patterns() -> &'static Vec<Vec<[(i8, i8); 2]>> {
                 base.iter()
                     .map(|pair| {
                         let r = |v: (f64, f64)| {
-                            ((v.0 * cs - v.1 * sn).round() as i8, (v.0 * sn + v.1 * cs).round() as i8)
+                            (
+                                (v.0 * cs - v.1 * sn).round() as i8,
+                                (v.0 * sn + v.1 * cs).round() as i8,
+                            )
                         };
                         [r(pair[0]), r(pair[1])]
                     })
@@ -97,7 +116,13 @@ fn is_fast_corner(g: &Gray, x: usize, y: usize, t: i16) -> bool {
     let mut ring = [0i8; 16];
     for (k, r) in ring.iter_mut().enumerate() {
         let v = px(k);
-        *r = if v > c + t { 1 } else if v < c - t { -1 } else { 0 };
+        *r = if v > c + t {
+            1
+        } else if v < c - t {
+            -1
+        } else {
+            0
+        };
     }
     for sign in [1i8, -1] {
         let mut run = 0;
@@ -163,8 +188,10 @@ pub fn detect(gray: &Gray, max_features: usize, scale: f64) -> Features {
     }
 
     // Score, then non-max suppress in 3x3 and spread over a grid.
-    let mut scored: Vec<(usize, usize, f32)> =
-        cands.iter().map(|&(x, y)| (x, y, harris(gray, x, y))).collect();
+    let mut scored: Vec<(usize, usize, f32)> = cands
+        .iter()
+        .map(|&(x, y)| (x, y, harris(gray, x, y)))
+        .collect();
     let mut score_map = std::collections::HashMap::with_capacity(scored.len());
     for &(x, y, s) in &scored {
         score_map.insert((x, y), s);
@@ -173,7 +200,9 @@ pub fn detect(gray: &Gray, max_features: usize, scale: f64) -> Features {
         for dy in -1i32..=1 {
             for dx in -1i32..=1 {
                 if (dx, dy) != (0, 0) {
-                    if let Some(&o) = score_map.get(&((x as i32 + dx) as usize, (y as i32 + dy) as usize)) {
+                    if let Some(&o) =
+                        score_map.get(&((x as i32 + dx) as usize, (y as i32 + dy) as usize))
+                    {
                         if o > s {
                             return false;
                         }
@@ -221,16 +250,33 @@ pub fn detect(gray: &Gray, max_features: usize, scale: f64) -> Features {
             % ANGLE_BINS;
         let mut d: Desc = [0; 4];
         for (i, pair) in pats[bin].iter().enumerate() {
-            let a = smooth.at((x as i32 + pair[0].0 as i32) as usize, (y as i32 + pair[0].1 as i32) as usize);
-            let b = smooth.at((x as i32 + pair[1].0 as i32) as usize, (y as i32 + pair[1].1 as i32) as usize);
+            let a = smooth.at(
+                (x as i32 + pair[0].0 as i32) as usize,
+                (y as i32 + pair[0].1 as i32) as usize,
+            );
+            let b = smooth.at(
+                (x as i32 + pair[1].0 as i32) as usize,
+                (y as i32 + pair[1].1 as i32) as usize,
+            );
             if a < b {
                 d[i / 64] |= 1 << (i % 64);
             }
         }
-        kps.push(Keypoint { x: x as f32 + 0.5, y: y as f32 + 0.5, angle, score: s });
+        kps.push(Keypoint {
+            x: x as f32 + 0.5,
+            y: y as f32 + 0.5,
+            angle,
+            score: s,
+        });
         desc.push(d);
     }
-    Features { w: w as u32, h: h as u32, scale, kps, desc }
+    Features {
+        w: w as u32,
+        h: h as u32,
+        scale,
+        kps,
+        desc,
+    }
 }
 
 const MAGIC: &[u8; 4] = b"AF01";
@@ -274,7 +320,12 @@ impl Features {
         let mut kps = Vec::with_capacity(n);
         for i in 0..n {
             let o = 24 + i * 16;
-            kps.push(Keypoint { x: f32_at(o), y: f32_at(o + 4), angle: f32_at(o + 8), score: f32_at(o + 12) });
+            kps.push(Keypoint {
+                x: f32_at(o),
+                y: f32_at(o + 4),
+                angle: f32_at(o + 8),
+                score: f32_at(o + 12),
+            });
         }
         let mut desc = Vec::with_capacity(n);
         let base = 24 + n * 16;
@@ -286,6 +337,12 @@ impl Features {
             }
             desc.push(d);
         }
-        Ok(Features { w, h, scale, kps, desc })
+        Ok(Features {
+            w,
+            h,
+            scale,
+            kps,
+            desc,
+        })
     }
 }

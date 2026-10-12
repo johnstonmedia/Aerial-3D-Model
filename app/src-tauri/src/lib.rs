@@ -10,10 +10,9 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use stitch_core::export::{export, levels, ExportOptions, Format, LevelInfo};
+use stitch_core::export::Format;
 use stitch_core::project::Settings;
-use stitch_core::render::{read_manifest, Manifest};
-use stitch_core::plan::{camera_presets, litchi_csv, parse_kml_boundary, plan, plan_kml, Camera, Plan, PlanInput};
+use stitch_core::plan::{Camera, Plan, PlanInput};
 use stitch_core::{Ctx, Profile, ProfileKind, Project};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -55,115 +54,7 @@ fn system_info() -> SystemInfo {
     }
 }
 
-#[derive(Serialize)]
-struct PhotoView {
-    id: u32,
-    name: String,
-    path: String,
-    lat: Option<f64>,
-    lon: Option<f64>,
-    yaw: Option<f64>,
-    width: u32,
-    height: u32,
-    missing: bool,
-}
-
-#[derive(Serialize)]
-struct ProjectView {
-    dir: String,
-    name: String,
-    photos: Vec<PhotoView>,
-    settings: Settings,
-    manifest: Option<Manifest>,
-    levels: Vec<LevelInfo>,
-    /// True orthophoto, once the 3D model has been built.
-    ortho: Option<Manifest>,
-    ortho_levels: Vec<LevelInfo>,
-    model3d: Option<Model3d>,
-}
-
-#[derive(Serialize)]
-struct Model3d {
-    /// Points in the dense cloud (0 if only the sparse stage has run).
-    points: u64,
-    sparse_points: u64,
-    /// The textured surface model (model.glb) exists.
-    mesh: bool,
-    /// The surface model offset that maps viewer coordinates back to the
-    /// project frame (glTF x, y, z = east, up, −north, minus this offset).
-    mesh_offset: Option<[f64; 3]>,
-    /// Changes when the model is rebuilt, so the viewer reloads it.
-    version: u64,
-}
-
-/// Vertex count from a PLY header, without reading the body.
-fn ply_count(path: &Path) -> Option<u64> {
-    use std::io::Read;
-    let mut head = vec![0u8; 1024];
-    let n = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
-    let text = String::from_utf8_lossy(&head[..n]);
-    text.lines().find_map(|l| l.strip_prefix("element vertex ")?.trim().parse().ok())
-}
-
-/// Reads the recentring offset from the GLB's JSON chunk (asset.extras).
-fn mesh_offset(dir: &Path) -> Option<[f64; 3]> {
-    use std::io::Read;
-    let mut f = std::fs::File::open(dir.join("model_view.glb")).ok()?;
-    let mut head = [0u8; 20];
-    f.read_exact(&mut head).ok()?;
-    let len = u32::from_le_bytes(head[12..16].try_into().ok()?) as usize;
-    let mut js = vec![0u8; len];
-    f.read_exact(&mut js).ok()?;
-    let v: serde_json::Value = serde_json::from_slice(&js).ok()?;
-    let e = &v["asset"]["extras"];
-    Some([e["local_offset"][0].as_f64()?, e["local_offset"][1].as_f64()?, e["local_offset"][2].as_f64()?])
-}
-
-fn model3d(p: &Project) -> Option<Model3d> {
-    let dir = stitch_core::recon::out_dir(p);
-    let sparse_points = ply_count(&dir.join("sparse.ply"))?;
-    let dense = dir.join("dense.ply");
-    let version = std::fs::metadata(if dense.exists() { &dense } else { &dir })
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let mesh = dir.join("model_view.glb").exists();
-    Some(Model3d { points: ply_count(&dense).unwrap_or(0), sparse_points, mesh, mesh_offset: mesh_offset(&dir), version })
-}
-
-fn view(p: &Project) -> ProjectView {
-    let manifest = read_manifest(p).ok();
-    let ortho = stitch_core::render::read_layer_manifest(p, stitch_core::render::Layer::Ortho).ok();
-    let levels = manifest.as_ref().map(levels).unwrap_or_default();
-    ProjectView {
-        dir: p.dir.to_string_lossy().into_owned(),
-        name: p.file.name.clone(),
-        photos: p
-            .file
-            .photos
-            .iter()
-            .map(|ph| PhotoView {
-                id: ph.id,
-                name: ph.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-                path: ph.path.to_string_lossy().into_owned(),
-                lat: ph.meta.lat,
-                lon: ph.meta.lon,
-                yaw: ph.meta.yaw,
-                width: ph.meta.width,
-                height: ph.meta.height,
-                missing: !ph.path.exists(),
-            })
-            .collect(),
-        settings: p.file.settings.clone(),
-        manifest,
-        levels,
-        ortho: ortho.clone(),
-        ortho_levels: ortho.as_ref().map(stitch_core::export::levels).unwrap_or_default(),
-        model3d: model3d(p),
-    }
-}
+use stitch_core::appapi::{self, AddResult, JobFinished, ProjectView};
 
 fn set_current(state: &AppState, app: &AppHandle, dir: &Path) {
     *state.current.lock().unwrap() = Some(dir.to_path_buf());
@@ -173,39 +64,25 @@ fn set_current(state: &AppState, app: &AppHandle, dir: &Path) {
 #[tauri::command]
 fn create_project(app: AppHandle, state: State<AppState>, dir: String, name: String) -> CmdResult<ProjectView> {
     let dir = PathBuf::from(dir);
-    let p = Project::create(&dir, &name).map_err(anyerr)?;
+    let v = appapi::create_project(&dir, &name).map_err(anyerr)?;
     set_current(&state, &app, &dir);
-    Ok(view(&p))
+    Ok(v)
 }
 
 #[tauri::command]
 fn open_project(app: AppHandle, state: State<AppState>, dir: String) -> CmdResult<ProjectView> {
     let dir = PathBuf::from(dir);
-    let mut p = Project::open(&dir).map_err(anyerr)?;
-    p.refresh().map_err(anyerr)?;
+    let v = appapi::open_project(&dir).map_err(anyerr)?;
     set_current(&state, &app, &dir);
-    Ok(view(&p))
-}
-
-#[derive(Serialize)]
-struct AddResult {
-    added: usize,
-    failed: Vec<(String, String)>,
-    project: ProjectView,
+    Ok(v)
 }
 
 #[tauri::command]
 async fn add_photos(dir: String, paths: Vec<String>) -> CmdResult<AddResult> {
     // Reading EXIF from thousands of files takes a moment; keep it off the UI thread.
     tauri::async_runtime::spawn_blocking(move || {
-        let mut p = Project::open(Path::new(&dir)).map_err(anyerr)?;
         let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-        let (added, failed) = p.add_photos(&paths).map_err(anyerr)?;
-        Ok(AddResult {
-            added,
-            failed: failed.into_iter().map(|(p, e)| (p.to_string_lossy().into_owned(), e)).collect(),
-            project: view(&p),
-        })
+        appapi::add_photos(Path::new(&dir), &paths).map_err(anyerr)
     })
     .await
     .map_err(err)?
@@ -213,25 +90,17 @@ async fn add_photos(dir: String, paths: Vec<String>) -> CmdResult<AddResult> {
 
 #[tauri::command]
 fn remove_photos(dir: String, ids: Vec<u32>) -> CmdResult<ProjectView> {
-    let mut p = Project::open(Path::new(&dir)).map_err(anyerr)?;
-    p.remove_photos(&ids).map_err(anyerr)?;
-    Ok(view(&p))
+    appapi::remove_photos(Path::new(&dir), &ids).map_err(anyerr)
 }
 
 #[tauri::command]
 fn save_settings(dir: String, settings: Settings) -> CmdResult<ProjectView> {
-    let mut p = Project::open(Path::new(&dir)).map_err(anyerr)?;
-    p.file.settings = settings;
-    p.save().map_err(anyerr)?;
-    Ok(view(&p))
+    appapi::save_settings(Path::new(&dir), settings).map_err(anyerr)
 }
 
-#[derive(Clone, Serialize)]
-struct JobFinished {
-    kind: &'static str,
-    ok: bool,
-    message: String,
-    detail: serde_json::Value,
+#[tauri::command]
+fn set_profile(dir: String, profile: Option<ProfileKind>) -> CmdResult<ProjectView> {
+    appapi::set_profile(Path::new(&dir), profile).map_err(anyerr)
 }
 
 fn start_job(state: &AppState) -> CmdResult<Arc<AtomicBool>> {
@@ -242,11 +111,6 @@ fn start_job(state: &AppState) -> CmdResult<Arc<AtomicBool>> {
     let flag = Arc::new(AtomicBool::new(false));
     *job = Some(flag.clone());
     Ok(flag)
-}
-
-fn finish_job(app: &AppHandle, done: JobFinished) {
-    *app.state::<AppState>().job.lock().unwrap() = None;
-    let _ = app.emit("job-finished", done);
 }
 
 fn ctx_for(app: &AppHandle, cancel: Arc<AtomicBool>) -> Ctx {
@@ -265,33 +129,21 @@ fn ctx_for(app: &AppHandle, cancel: Arc<AtomicBool>) -> Ctx {
     )
 }
 
-#[tauri::command]
-fn process(app: AppHandle, state: State<AppState>, dir: String) -> CmdResult<()> {
-    let cancel = start_job(&state)?;
-    let ctx = ctx_for(&app, cancel.clone());
+/// Runs a long job on its own thread; the UI hears about it through events.
+fn spawn_job(app: AppHandle, state: &AppState, job: impl FnOnce(&Ctx) -> JobFinished + Send + 'static) -> CmdResult<()> {
+    let cancel = start_job(state)?;
+    let ctx = ctx_for(&app, cancel);
     std::thread::spawn(move || {
-        let result = Project::open(Path::new(&dir)).and_then(|p| stitch_core::pipeline::process(&p, &ctx));
-        let done = match result {
-            Ok(s) => JobFinished {
-                kind: "process",
-                ok: true,
-                message: if s.oblique_skipped > 0 {
-                    format!("Placed {} of {} photos · {} angled photos skipped (kept for 3D)", s.placed, s.photos, s.oblique_skipped)
-                } else {
-                    format!("Placed {} of {} photos", s.placed, s.photos)
-                },
-                detail: serde_json::to_value(&s).unwrap_or_default(),
-            },
-            Err(e) => JobFinished {
-                kind: "process",
-                ok: false,
-                message: if cancel.load(Ordering::Relaxed) { "Cancelled".into() } else { format!("{e:#}") },
-                detail: serde_json::Value::Null,
-            },
-        };
-        finish_job(&app, done);
+        let done = job(&ctx);
+        *app.state::<AppState>().job.lock().unwrap() = None;
+        let _ = app.emit("job-finished", done);
     });
     Ok(())
+}
+
+#[tauri::command]
+fn process(app: AppHandle, state: State<AppState>, dir: String) -> CmdResult<()> {
+    spawn_job(app, &state, move |ctx| appapi::process(Path::new(&dir), ctx))
 }
 
 #[tauri::command]
@@ -304,67 +156,12 @@ fn export_map(
     zoom: Option<u32>,
     path: String,
 ) -> CmdResult<()> {
-    let cancel = start_job(&state)?;
-    let ctx = ctx_for(&app, cancel.clone());
-    std::thread::spawn(move || {
-        let result = Project::open(Path::new(&dir))
-            .and_then(|p| {
-                let layer = layer.unwrap_or_default();
-                export(&p, &ExportOptions { format, layer, zoom, path: PathBuf::from(&path) }, &ctx)
-            });
-        let done = match result {
-            Ok(out) => JobFinished {
-                kind: "export",
-                ok: true,
-                message: format!("Saved {}", out.display()),
-                detail: serde_json::json!({ "path": out }),
-            },
-            Err(e) => JobFinished {
-                kind: "export",
-                ok: false,
-                message: if cancel.load(Ordering::Relaxed) { "Cancelled".into() } else { format!("{e:#}") },
-                detail: serde_json::Value::Null,
-            },
-        };
-        finish_job(&app, done);
-    });
-    Ok(())
+    spawn_job(app, &state, move |ctx| appapi::export_map(Path::new(&dir), format, layer, zoom, Path::new(&path), ctx))
 }
 
 #[tauri::command]
 fn build_3d(app: AppHandle, state: State<AppState>, dir: String) -> CmdResult<()> {
-    let cancel = start_job(&state)?;
-    let ctx = ctx_for(&app, cancel.clone());
-    std::thread::spawn(move || {
-        let result = Project::open(Path::new(&dir)).and_then(|p| {
-            let s = stitch_core::recon::run_sparse(&p, &ctx)?;
-            let (n, voxel) = stitch_core::recon::run_dense(&p, &ctx)?;
-            stitch_core::recon::run_ortho(&p, &ctx)?;
-            stitch_core::recon::run_mesh(&p, &ctx)?;
-            Ok((s, n, voxel))
-        });
-        let done = match result {
-            Ok((s, n, voxel)) => JobFinished {
-                kind: "3d",
-                ok: true,
-                message: format!(
-                    "3D surface, point cloud and true orthophoto ready: {} points from {} photos ({} angled)",
-                    n,
-                    s.cameras.len(),
-                    s.cameras.iter().filter(|c| c.oblique).count()
-                ),
-                detail: serde_json::json!({ "points": n, "voxel_m": voxel, "rms_px": s.rms_px }),
-            },
-            Err(e) => JobFinished {
-                kind: "3d",
-                ok: false,
-                message: if cancel.load(Ordering::Relaxed) { "Cancelled".into() } else { format!("{e:#}") },
-                detail: serde_json::Value::Null,
-            },
-        };
-        finish_job(&app, done);
-    });
-    Ok(())
+    spawn_job(app, &state, move |ctx| appapi::build_3d(Path::new(&dir), ctx))
 }
 
 #[tauri::command]
@@ -373,29 +170,17 @@ fn measure_volume(
     polygon: Vec<(f64, f64)>,
     level: stitch_core::recon::measure::Level,
 ) -> CmdResult<stitch_core::recon::measure::VolumeResult> {
-    let p = Project::open(Path::new(&dir)).map_err(anyerr)?;
-    let d = stitch_core::recon::dsm::Dsm::load(&stitch_core::recon::out_dir(&p).join("dsm.bin"))
-        .map_err(|_| "build the 3D model first: volume is measured on its surface".to_string())?;
-    stitch_core::recon::measure::volume(&d, &polygon, level)
-        .ok_or_else(|| "that outline doesn't cover any of the surface".to_string())
+    appapi::measure_volume(Path::new(&dir), &polygon, level).map_err(anyerr)
 }
 
-/// Copies the full-detail textured surface (GLB) out.
 #[tauri::command]
 fn export_model(dir: String, path: String) -> CmdResult<String> {
-    let p = Project::open(Path::new(&dir)).map_err(anyerr)?;
-    std::fs::copy(stitch_core::recon::out_dir(&p).join("model.glb"), &path).map_err(err)?;
-    Ok(path)
+    appapi::export_model(Path::new(&dir), Path::new(&path)).map_err(anyerr)
 }
 
-/// Copies the dense cloud (or the sparse one, if that's all there is) out.
 #[tauri::command]
 fn export_cloud(dir: String, path: String) -> CmdResult<String> {
-    let p = Project::open(Path::new(&dir)).map_err(anyerr)?;
-    let d = stitch_core::recon::out_dir(&p);
-    let src = if d.join("dense.ply").exists() { d.join("dense.ply") } else { d.join("sparse.ply") };
-    std::fs::copy(&src, &path).map_err(err)?;
-    Ok(path)
+    appapi::export_cloud(Path::new(&dir), Path::new(&path)).map_err(anyerr)
 }
 
 #[tauri::command]
@@ -405,80 +190,36 @@ fn cancel_job(state: State<AppState>) {
     }
 }
 
-#[tauri::command]
-fn set_profile(dir: String, profile: Option<ProfileKind>) -> CmdResult<ProjectView> {
-    let mut p = Project::open(Path::new(&dir)).map_err(anyerr)?;
-    p.file.settings.profile = profile;
-    p.save().map_err(anyerr)?;
-    Ok(view(&p))
-}
-
-
 // ─────────────────────────────── Flight planner ───────────────────────────────
 
 #[tauri::command]
 fn plan_defaults() -> (PlanInput, Vec<Camera>) {
-    (PlanInput::default(), camera_presets())
+    appapi::plan_defaults()
 }
 
 #[tauri::command]
 fn plan_flight(input: PlanInput) -> CmdResult<Plan> {
-    plan(&input).map_err(anyerr)
+    appapi::plan_flight(&input).map_err(anyerr)
 }
 
-fn safe_name(s: &str) -> String {
-    let t: String = s.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
-    if t.is_empty() { "survey".into() } else { t }
-}
-
-/// Writes one Litchi CSV per mission plus a KML of the whole route.
 #[tauri::command]
 fn export_litchi(input: PlanInput, dir: String) -> CmdResult<Vec<String>> {
-    let p = plan(&input).map_err(anyerr)?;
-    let dir = PathBuf::from(dir);
-    std::fs::create_dir_all(&dir).map_err(err)?;
-    let base = safe_name(&input.name);
-    let mut written = Vec::new();
-    let n = p.missions.len();
-    for (i, m) in p.missions.iter().enumerate() {
-        let file = if n == 1 { format!("{base}_litchi.csv") } else { format!("{base}_litchi_{}of{n}.csv", i + 1) };
-        let path = dir.join(file);
-        std::fs::write(&path, litchi_csv(&input, m, p.stats.speed_ms)).map_err(err)?;
-        written.push(path.to_string_lossy().into_owned());
-    }
-    let kml = dir.join(format!("{base}_route.kml"));
-    std::fs::write(&kml, plan_kml(&input, &p)).map_err(err)?;
-    written.push(kml.to_string_lossy().into_owned());
-    Ok(written)
+    appapi::export_litchi(&input, Path::new(&dir)).map_err(anyerr)
 }
 
-/// Boundary from a .kml, or the first .kml inside a .kmz.
 #[tauri::command]
 fn import_boundary(path: String) -> CmdResult<Vec<(f64, f64)>> {
-    let bytes = std::fs::read(&path).map_err(err)?;
-    let text = if path.to_lowercase().ends_with(".kmz") {
-        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(err)?;
-        let name = (0..zip.len())
-            .filter_map(|i| zip.by_index(i).ok().map(|f| f.name().to_string()))
-            .find(|n| n.to_lowercase().ends_with(".kml"))
-            .ok_or("no KML inside that KMZ")?;
-        let mut s = String::new();
-        std::io::Read::read_to_string(&mut zip.by_name(&name).map_err(err)?, &mut s).map_err(err)?;
-        s
-    } else {
-        String::from_utf8_lossy(&bytes).into_owned()
-    };
-    parse_kml_boundary(&text).map_err(anyerr)
+    appapi::import_boundary(Path::new(&path)).map_err(anyerr)
 }
 
 #[tauri::command]
 fn save_plan(path: String, input: PlanInput) -> CmdResult<()> {
-    std::fs::write(path, serde_json::to_vec_pretty(&input).map_err(err)?).map_err(err)
+    appapi::save_plan(Path::new(&path), &input).map_err(anyerr)
 }
 
 #[tauri::command]
 fn load_plan(path: String) -> CmdResult<PlanInput> {
-    serde_json::from_slice(&std::fs::read(path).map_err(err)?).map_err(err)
+    appapi::load_plan(Path::new(&path)).map_err(anyerr)
 }
 
 fn recent_file(app: &AppHandle) -> Option<PathBuf> {

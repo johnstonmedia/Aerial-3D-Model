@@ -12,7 +12,9 @@ use super::sparse::Sparse;
 use crate::imgops::{box_down, load_rgb, Rgb};
 use crate::profile::Profile;
 use crate::project::Project;
-use crate::render::{build_pyramid, max_zoom_for, tile_path, write_jpeg, Manifest, RasterCache, DATA_FLOOR, TILE};
+use crate::render::{
+    build_pyramid, max_zoom_for, tile_path, write_jpeg, Manifest, RasterCache, DATA_FLOOR, TILE,
+};
 use crate::Ctx;
 use anyhow::{bail, Result};
 use nalgebra::Vector2;
@@ -92,11 +94,21 @@ impl CamIndex {
             let rwc = cam.pose.r.transpose();
             let agl = (cam.pose.c.z - ground).max(5.0);
             let (mut xa, mut xb, mut ya, mut yb) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
-            for (u, v) in [(0.0, 0.0), (k.width as f64, 0.0), (0.0, k.height as f64), (k.width as f64, k.height as f64), (k.cx, k.cy)] {
+            for (u, v) in [
+                (0.0, 0.0),
+                (k.width as f64, 0.0),
+                (0.0, k.height as f64),
+                (k.width as f64, k.height as f64),
+                (k.cx, k.cy),
+            ] {
                 let p = k.undistort(Vector2::new(u, v));
                 let ray = rwc * V3::new(p.x, p.y, 1.0);
                 // Rays near the horizon would reach forever: cap at 5× height.
-                let t = if ray.z < -0.05 { ((ground - cam.pose.c.z) / ray.z).min(agl * 5.0) } else { agl * 5.0 };
+                let t = if ray.z < -0.05 {
+                    ((ground - cam.pose.c.z) / ray.z).min(agl * 5.0)
+                } else {
+                    agl * 5.0
+                };
                 let g = cam.pose.c + ray * t;
                 xa = xa.min(g.x);
                 xb = xb.max(g.x);
@@ -113,7 +125,14 @@ impl CamIndex {
                 }
             }
         }
-        Self { x0, y0, size, nx, ny, cells }
+        Self {
+            x0,
+            y0,
+            size,
+            nx,
+            ny,
+            cells,
+        }
     }
 
     pub fn near(&self, x: f64, y: f64) -> &[u32] {
@@ -136,14 +155,23 @@ fn rank_top_down(sp: &Sparse, dsm: &Dsm, idx: &CamIndex, ctx: &Ctx) -> Vec<Seen>
         .flat_map_iter(|j| {
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
             if n % 64 == 0 || n == rows {
-                ctx.report("visibility", n, rows, "Working out which photos see each spot");
+                ctx.report(
+                    "visibility",
+                    n,
+                    rows,
+                    "Working out which photos see each spot",
+                );
             }
             (0..dsm.nx).map(move |i| {
                 let z = dsm.at(i, j);
                 if !z.is_finite() {
                     return [NONE; 3];
                 }
-                let p = V3::new(dsm.x0 + (i as f64 + 0.5) * dsm.cell, dsm.y0 + (j as f64 + 0.5) * dsm.cell, z as f64);
+                let p = V3::new(
+                    dsm.x0 + (i as f64 + 0.5) * dsm.cell,
+                    dsm.y0 + (j as f64 + 0.5) * dsm.cell,
+                    z as f64,
+                );
                 let mut cands: Vec<(f64, u32)> = idx
                     .near(p.x, p.y)
                     .iter()
@@ -196,13 +224,29 @@ fn cam_gsd(sp: &Sparse) -> Vec<f64> {
         .collect()
 }
 
-pub(crate) fn project_px(pose: &Pose, k: &super::geometry::Intrinsics, p: &V3) -> Option<Vector2<f64>> {
+pub(crate) fn project_px(
+    pose: &Pose,
+    k: &super::geometry::Intrinsics,
+    p: &V3,
+) -> Option<Vector2<f64>> {
     pose.project(k, p)
 }
 
-pub fn render_ortho(project: &Project, sp: &Sparse, dsm: &Dsm, profile: &Profile, ctx: &Ctx) -> Result<Manifest> {
+pub fn render_ortho(
+    project: &Project,
+    sp: &Sparse,
+    dsm: &Dsm,
+    profile: &Profile,
+    ctx: &Ctx,
+) -> Result<Manifest> {
     let gsds = cam_gsd(sp);
-    let mut g: Vec<f64> = sp.cameras.iter().zip(&gsds).filter(|(c, _)| !c.oblique).map(|(_, g)| *g).collect();
+    let mut g: Vec<f64> = sp
+        .cameras
+        .iter()
+        .zip(&gsds)
+        .filter(|(c, _)| !c.oblique)
+        .map(|(_, g)| *g)
+        .collect();
     if g.is_empty() {
         g = gsds.clone();
     }
@@ -255,7 +299,8 @@ pub fn render_ortho(project: &Project, sp: &Sparse, dsm: &Dsm, profile: &Profile
     let cache = RasterCache::new(profile.render_cache_bytes);
     let tiles: Vec<(usize, usize)> = {
         const BLOCK: usize = 4;
-        let mut t: Vec<(usize, usize)> = (0..ny).flat_map(|y| (0..nx).map(move |x| (x, y))).collect();
+        let mut t: Vec<(usize, usize)> =
+            (0..ny).flat_map(|y| (0..nx).map(move |x| (x, y))).collect();
         let key = |&(x, y): &(usize, usize)| {
             let (bx, by) = (x / BLOCK, y / BLOCK);
             (by, if by % 2 == 0 { bx } else { usize::MAX - bx }, y, x)
@@ -274,8 +319,14 @@ pub fn render_ortho(project: &Project, sp: &Sparse, dsm: &Dsm, profile: &Profile
             // Cameras used by the cells under this tile.
             let mut used: HashMap<u32, Option<Arc<Rgb>>> = HashMap::new();
             let ci0 = (((x0 - dsm.x0) / dsm.cell).floor().max(0.0) as usize).min(dsm.nx - 1);
-            let ci1 = (((x0 + TILE as f64 * gsd - dsm.x0) / dsm.cell).floor().max(0.0) as usize).min(dsm.nx - 1);
-            let cj0 = (((y1 - TILE as f64 * gsd - dsm.y0) / dsm.cell).floor().max(0.0) as usize).min(dsm.ny - 1);
+            let ci1 = (((x0 + TILE as f64 * gsd - dsm.x0) / dsm.cell)
+                .floor()
+                .max(0.0) as usize)
+                .min(dsm.nx - 1);
+            let cj0 = (((y1 - TILE as f64 * gsd - dsm.y0) / dsm.cell)
+                .floor()
+                .max(0.0) as usize)
+                .min(dsm.ny - 1);
             let cj1 = (((y1 - dsm.y0) / dsm.cell).floor().max(0.0) as usize).min(dsm.ny - 1);
             for j in cj0..=cj1 {
                 for i in ci0..=ci1 {
@@ -321,15 +372,23 @@ pub fn render_ortho(project: &Project, sp: &Sparse, dsm: &Dsm, profile: &Profile
                             continue;
                         }
                         let ci = c as usize;
-                        let Some(Some(img)) = used.get(&c) else { continue };
+                        let Some(Some(img)) = used.get(&c) else {
+                            continue;
+                        };
                         let cam = &sp.cameras[ci];
                         let k = &sp.intrinsics[cam.group];
-                        let Some(u) = project_px(&cam.pose, k, &p) else { continue };
+                        let Some(u) = project_px(&cam.pose, k, &p) else {
+                            continue;
+                        };
                         let f = factor[ci] as f64;
-                        let Some(col) = img.sample(u.x / f, u.y / f) else { continue };
+                        let Some(col) = img.sample(u.x / f, u.y / f) else {
+                            continue;
+                        };
                         // Per-pixel centredness keeps the hand-over between
                         // photos smooth inside a cell, not only at its edges.
-                        let ww = w as f64 * centredness(&u, k.width as f64, k.height as f64).powi(8) + 1e-12;
+                        let ww = w as f64
+                            * centredness(&u, k.width as f64, k.height as f64).powi(8)
+                            + 1e-12;
                         for c in 0..3 {
                             acc[c] += col[c] as f64 * ww;
                         }
@@ -383,6 +442,9 @@ pub fn render_ortho(project: &Project, sp: &Sparse, dsm: &Dsm, profile: &Profile
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0),
     };
-    std::fs::write(dir.join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
+    std::fs::write(
+        dir.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest)?,
+    )?;
     Ok(manifest)
 }

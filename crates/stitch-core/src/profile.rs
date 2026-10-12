@@ -29,7 +29,9 @@ pub struct Profile {
 
 impl Profile {
     pub fn for_kind(kind: ProfileKind) -> Self {
-        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
         match kind {
             ProfileKind::Lite => Profile {
                 kind,
@@ -49,7 +51,7 @@ impl Profile {
                 kind,
                 work_size: 2048,
                 max_features: 4000,
-                render_cache_bytes: 8 << 30,
+                render_cache_bytes: (8u64 << 30).min(usize::MAX as u64) as usize,
                 threads: cores,
             },
         }
@@ -57,7 +59,17 @@ impl Profile {
 
     /// Picks a profile from installed RAM.
     pub fn detect() -> Self {
-        Self::for_kind(Self::kind_for_ram(total_ram_bytes()))
+        Self::for_kind(Self::kind_for_ram(total_ram_bytes())).fit_platform()
+    }
+
+    /// The web demo runs in WebAssembly: one thread and a 4 GB address
+    /// space shared with everything else, so the photo cache stays small.
+    pub fn fit_platform(mut self) -> Self {
+        if cfg!(target_family = "wasm") {
+            self.threads = 1;
+            self.render_cache_bytes = self.render_cache_bytes.min(320 << 20);
+        }
+        self
     }
 
     pub fn kind_for_ram(bytes: u64) -> ProfileKind {

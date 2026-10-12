@@ -18,11 +18,18 @@ pub struct UtmZone {
 impl UtmZone {
     pub fn for_lonlat(lon: f64, lat: f64) -> Self {
         let zone = (((lon + 180.0) / 6.0).floor() as i32).clamp(0, 59) as u8 + 1;
-        UtmZone { zone, north: lat >= 0.0 }
+        UtmZone {
+            zone,
+            north: lat >= 0.0,
+        }
     }
 
     pub fn epsg(&self) -> u32 {
-        if self.north { 32600 + self.zone as u32 } else { 32700 + self.zone as u32 }
+        if self.north {
+            32600 + self.zone as u32
+        } else {
+            32700 + self.zone as u32
+        }
     }
 
     fn central_meridian(&self) -> f64 {
@@ -111,7 +118,10 @@ pub fn from_utm(easting: f64, northing: f64, zone: UtmZone) -> (f64, f64) {
         }
     }
     let lam = ep.sinh().atan2(xp.cos());
-    (zone.central_meridian() + lam.to_degrees(), tau.atan().to_degrees())
+    (
+        zone.central_meridian() + lam.to_degrees(),
+        tau.atan().to_degrees(),
+    )
 }
 
 #[cfg(test)]
@@ -128,7 +138,10 @@ mod tests {
         assert!((e - 334_900.569_652).abs() < 0.001, "e={e}");
         assert!((n - 6_252_288.752_888).abs() < 0.001, "n={n}");
         let (lo, la) = from_utm(e, n, z);
-        assert!((lo - lon).abs() < 1e-7 && (la - lat).abs() < 1e-7, "{lo} {la}");
+        assert!(
+            (lo - lon).abs() < 1e-7 && (la - lat).abs() < 1e-7,
+            "{lo} {la}"
+        );
     }
 
     #[test]
@@ -136,6 +149,9 @@ mod tests {
         let z = UtmZone::for_lonlat(15.5, 60.1);
         assert_eq!(z.epsg(), 32633);
         let (e, n) = to_utm(15.5, 60.1, z);
-        assert!((e - 527_804.454_278).abs() < 0.001 && (n - 6_662_653.220_260).abs() < 0.001, "{e} {n}");
+        assert!(
+            (e - 527_804.454_278).abs() < 0.001 && (n - 6_662_653.220_260).abs() < 0.001,
+            "{e} {n}"
+        );
     }
 }

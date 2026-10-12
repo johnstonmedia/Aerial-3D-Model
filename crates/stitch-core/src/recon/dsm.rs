@@ -57,8 +57,19 @@ impl Dsm {
         if b.len() != 48 + nx * ny * 4 {
             bail!("truncated surface model file");
         }
-        let h = b[48..].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
-        Ok(Dsm { x0, y0, cell, nx, ny, h, zmax })
+        let h = b[48..]
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        Ok(Dsm {
+            x0,
+            y0,
+            cell,
+            nx,
+            ny,
+            h,
+            zmax,
+        })
     }
 
     #[inline]
@@ -80,8 +91,18 @@ impl Dsm {
         let j1 = (j0 + 1).min(self.ny - 1);
         let ax = (fx - i0 as f64).clamp(0.0, 1.0) as f32;
         let ay = (fy - j0 as f64).clamp(0.0, 1.0) as f32;
-        let v = [self.at(i0, j0), self.at(i1, j0), self.at(i0, j1), self.at(i1, j1)];
-        let w = [(1.0 - ax) * (1.0 - ay), ax * (1.0 - ay), (1.0 - ax) * ay, ax * ay];
+        let v = [
+            self.at(i0, j0),
+            self.at(i1, j0),
+            self.at(i0, j1),
+            self.at(i1, j1),
+        ];
+        let w = [
+            (1.0 - ax) * (1.0 - ay),
+            ax * (1.0 - ay),
+            (1.0 - ax) * ay,
+            ax * ay,
+        ];
         let (mut s, mut ws) = (0.0, 0.0);
         for k in 0..4 {
             if v[k].is_finite() {
@@ -214,7 +235,16 @@ pub fn build_dsm(dense_ply: &Path, voxel_m: f64, profile: &Profile) -> Result<Ds
                     continue;
                 }
                 let (mut s, mut c) = (0.0, 0);
-                for (di, dj) in [(-1i64, 0i64), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)] {
+                for (di, dj) in [
+                    (-1i64, 0i64),
+                    (1, 0),
+                    (0, -1),
+                    (0, 1),
+                    (-1, -1),
+                    (1, 1),
+                    (-1, 1),
+                    (1, -1),
+                ] {
                     let (a, b) = (i as i64 + di, j as i64 + dj);
                     if a >= 0 && b >= 0 && (a as usize) < nx && (b as usize) < ny {
                         let x = snap[b as usize * nx + a as usize];
@@ -243,8 +273,20 @@ pub fn build_dsm(dense_ply: &Path, voxel_m: f64, profile: &Profile) -> Result<Ds
             }
         }
     }
-    let zmax = h.iter().copied().filter(|v| v.is_finite()).fold(f32::MIN, f32::max);
-    Ok(Dsm { x0: xa, y0: ya, cell, nx, ny, h, zmax })
+    let zmax = h
+        .iter()
+        .copied()
+        .filter(|v| v.is_finite())
+        .fold(f32::MIN, f32::max);
+    Ok(Dsm {
+        x0: xa,
+        y0: ya,
+        cell,
+        nx,
+        ny,
+        h,
+        zmax,
+    })
 }
 
 /// 4-connected components of valid cells smaller than `min_cells` are removed.
@@ -268,10 +310,18 @@ fn remove_islands(h: &mut [f32], nx: usize, ny: usize, min_cells: usize) {
                     stack.push(kk);
                 }
             };
-            if i > 0 { push(k - 1); }
-            if i + 1 < nx { push(k + 1); }
-            if j > 0 { push(k - nx); }
-            if j + 1 < ny { push(k + nx); }
+            if i > 0 {
+                push(k - 1);
+            }
+            if i + 1 < nx {
+                push(k + 1);
+            }
+            if j > 0 {
+                push(k - nx);
+            }
+            if j + 1 < ny {
+                push(k + nx);
+            }
         }
         if comp.len() < min_cells {
             for &k in &comp {
@@ -301,12 +351,22 @@ fn fill_enclosed(h: &mut [f32], nx: usize, ny: usize) {
         }
         outside[k] = true;
         let (i, j) = (k % nx, k / nx);
-        if i > 0 { stack.push(k - 1); }
-        if i + 1 < nx { stack.push(k + 1); }
-        if j > 0 { stack.push(k - nx); }
-        if j + 1 < ny { stack.push(k + nx); }
+        if i > 0 {
+            stack.push(k - 1);
+        }
+        if i + 1 < nx {
+            stack.push(k + 1);
+        }
+        if j > 0 {
+            stack.push(k - nx);
+        }
+        if j + 1 < ny {
+            stack.push(k + nx);
+        }
     }
-    let mut todo: Vec<usize> = (0..nx * ny).filter(|&k| !h[k].is_finite() && !outside[k]).collect();
+    let mut todo: Vec<usize> = (0..nx * ny)
+        .filter(|&k| !h[k].is_finite() && !outside[k])
+        .collect();
     let mut guard = 0;
     while !todo.is_empty() && guard < 10_000 {
         guard += 1;
@@ -340,7 +400,15 @@ mod tests {
 
     #[test]
     fn bilinear_height_and_gaps() {
-        let mut d = Dsm { x0: 0.0, y0: 0.0, cell: 1.0, nx: 3, ny: 3, h: vec![10.0; 9], zmax: 12.0 };
+        let mut d = Dsm {
+            x0: 0.0,
+            y0: 0.0,
+            cell: 1.0,
+            nx: 3,
+            ny: 3,
+            h: vec![10.0; 9],
+            zmax: 12.0,
+        };
         d.h[4] = 12.0; // centre cell (1,1) at world (1.5, 1.5)
         assert!((d.height(1.5, 1.5).unwrap() - 12.0).abs() < 1e-5);
         assert!((d.height(1.0, 1.5).unwrap() - 11.0).abs() < 1e-5);

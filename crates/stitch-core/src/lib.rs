@@ -17,6 +17,7 @@
 //!
 //! Memory use is governed by a [`Profile`], picked from installed RAM.
 
+pub mod appapi;
 pub mod export;
 pub mod features;
 pub mod geo;
@@ -56,7 +57,10 @@ pub struct Ctx {
 
 impl Ctx {
     pub fn new(report: impl Fn(Progress) + Send + Sync + 'static, cancel: Arc<AtomicBool>) -> Self {
-        Self { report: Arc::new(report), cancel }
+        Self {
+            report: Arc::new(report),
+            cancel,
+        }
     }
 
     /// A context that reports nothing and can't be cancelled.
@@ -65,7 +69,12 @@ impl Ctx {
     }
 
     pub fn report(&self, stage: &str, done: usize, total: usize, message: impl Into<String>) {
-        (self.report)(Progress { stage: stage.into(), done, total, message: message.into() });
+        (self.report)(Progress {
+            stage: stage.into(),
+            done,
+            total,
+            message: message.into(),
+        });
     }
 
     pub fn cancelled(&self) -> bool {
@@ -77,5 +86,14 @@ impl Ctx {
             anyhow::bail!("cancelled");
         }
         Ok(())
+    }
+}
+
+/// Runs `f` on a thread pool of `threads` workers. Where threads don't exist
+/// (WebAssembly, for the web demo) it runs on the calling thread instead.
+pub fn with_pool<R: Send>(threads: usize, f: impl FnOnce() -> R + Send) -> R {
+    match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
+        Ok(pool) => pool.install(f),
+        Err(_) => f(),
     }
 }

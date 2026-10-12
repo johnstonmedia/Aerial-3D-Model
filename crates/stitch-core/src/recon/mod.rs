@@ -28,8 +28,17 @@ pub fn run_sparse(project: &Project, ctx: &Ctx) -> Result<sparse::Sparse> {
     let dir = out_dir(project);
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("cameras.json"), serde_json::to_vec(&s)?)?;
-    let pts: Vec<[f32; 3]> = s.points.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect();
-    ply::write_ply(&dir.join("sparse.ply"), &pts, &s.colors, &origin_comment(&s))?;
+    let pts: Vec<[f32; 3]> = s
+        .points
+        .iter()
+        .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+        .collect();
+    ply::write_ply(
+        &dir.join("sparse.ply"),
+        &pts,
+        &s.colors,
+        &origin_comment(&s),
+    )?;
     Ok(s)
 }
 
@@ -48,17 +57,25 @@ pub const VIEW_MAX_POINTS: usize = 1_500_000;
 
 /// Loads the sparse result written by [`run_sparse`].
 pub fn load_sparse(project: &Project) -> Result<sparse::Sparse> {
-    Ok(serde_json::from_slice(&std::fs::read(out_dir(project).join("cameras.json"))?)?)
+    Ok(serde_json::from_slice(&std::fs::read(
+        out_dir(project).join("cameras.json"),
+    )?)?)
 }
 
 /// Dense point cloud from an existing sparse result; writes `dense.ply`.
 pub fn run_dense(project: &Project, ctx: &Ctx) -> Result<(usize, f64)> {
     let s = load_sparse(project)?;
     let profile = crate::pipeline::effective_profile(project);
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(profile.threads).build()?;
-    let cloud = pool.install(|| dense::reconstruct_dense(project, &s, &profile, ctx))?;
+    let cloud = crate::with_pool(profile.threads, || {
+        dense::reconstruct_dense(project, &s, &profile, ctx)
+    })?;
     let dir = out_dir(project);
-    ply::write_ply(&dir.join("dense.ply"), &cloud.points, &cloud.colors, &origin_comment(&s))?;
+    ply::write_ply(
+        &dir.join("dense.ply"),
+        &cloud.points,
+        &cloud.colors,
+        &origin_comment(&s),
+    )?;
     // A lighter copy for the in-app viewer: a few million points is fine to
     // export but slow to load and orbit on an integrated GPU.
     let step = cloud.points.len().div_ceil(VIEW_MAX_POINTS).max(1);
@@ -74,8 +91,7 @@ pub fn run_dense(project: &Project, ctx: &Ctx) -> Result<(usize, f64)> {
 pub fn run_ortho(project: &Project, ctx: &Ctx) -> Result<crate::render::Manifest> {
     let s = load_sparse(project)?;
     let profile = crate::pipeline::effective_profile(project);
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(profile.threads).build()?;
-    pool.install(|| {
+    crate::with_pool(profile.threads, || {
         ctx.report("dsm", 0, 1, "Building the surface model");
         let voxel = dense_voxel(project).unwrap_or(0.25);
         let d = dsm::build_dsm(&out_dir(project).join("dense.ply"), voxel, &profile)?;
@@ -86,7 +102,11 @@ pub fn run_ortho(project: &Project, ctx: &Ctx) -> Result<crate::render::Manifest
 
 /// The voxel size the dense cloud was fused at (recorded by `run_dense`).
 fn dense_voxel(project: &Project) -> Option<f64> {
-    std::fs::read_to_string(out_dir(project).join("dense.voxel")).ok()?.trim().parse().ok()
+    std::fs::read_to_string(out_dir(project).join("dense.voxel"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// Textured surface model from the DSM + true orthophoto; writes
@@ -96,8 +116,7 @@ pub fn run_mesh(project: &Project, ctx: &Ctx) -> Result<mesh::MeshStats> {
     let d = dsm::Dsm::load(&out_dir(project).join("dsm.bin"))?;
     let om = crate::render::read_layer_manifest(project, crate::render::Layer::Ortho)?;
     let profile = crate::pipeline::effective_profile(project);
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(profile.threads).build()?;
-    pool.install(|| {
+    crate::with_pool(profile.threads, || {
         mesh::build_mesh(
             &out_dir(project),
             &crate::render::layer_tiles_dir(project, crate::render::Layer::Ortho),

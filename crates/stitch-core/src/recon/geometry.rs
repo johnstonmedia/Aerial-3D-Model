@@ -85,7 +85,10 @@ impl Pose {
         if roll_deg.abs() > 1e-9 {
             r_wc *= rot_axis(&V3::new(0.0, 0.0, 1.0), roll_deg.to_radians());
         }
-        Pose { r: r_wc.transpose(), c }
+        Pose {
+            r: r_wc.transpose(),
+            c,
+        }
     }
 }
 
@@ -158,11 +161,26 @@ type M9 = SMatrix<f64, 9, 9>;
 
 fn normalise(pts: &[(f64, f64)]) -> (Vec<(f64, f64)>, M3) {
     let n = pts.len() as f64;
-    let (mx, my) = pts.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0 / n, a.1 + p.1 / n));
-    let d = pts.iter().map(|p| ((p.0 - mx).powi(2) + (p.1 - my).powi(2)).sqrt()).sum::<f64>() / n;
-    let s = if d > 1e-12 { std::f64::consts::SQRT_2 / d } else { 1.0 };
+    let (mx, my) = pts
+        .iter()
+        .fold((0.0, 0.0), |a, p| (a.0 + p.0 / n, a.1 + p.1 / n));
+    let d = pts
+        .iter()
+        .map(|p| ((p.0 - mx).powi(2) + (p.1 - my).powi(2)).sqrt())
+        .sum::<f64>()
+        / n;
+    let s = if d > 1e-12 {
+        std::f64::consts::SQRT_2 / d
+    } else {
+        1.0
+    };
     let t = M3::new(s, 0.0, -s * mx, 0.0, s, -s * my, 0.0, 0.0, 1.0);
-    (pts.iter().map(|p| ((p.0 - mx) * s, (p.1 - my) * s)).collect(), t)
+    (
+        pts.iter()
+            .map(|p| ((p.0 - mx) * s, (p.1 - my) * s))
+            .collect(),
+        t,
+    )
 }
 
 /// Normalised 8-point fundamental matrix (x2ᵀ F x1 = 0), rank 2 enforced.
@@ -174,7 +192,17 @@ pub fn fundamental(a: &[(f64, f64)], b: &[(f64, f64)]) -> Option<M3> {
     let (nb, tb) = normalise(b);
     let mut m = M9::zeros();
     for (p, q) in na.iter().zip(&nb) {
-        let row = [q.0 * p.0, q.0 * p.1, q.0, q.1 * p.0, q.1 * p.1, q.1, p.0, p.1, 1.0];
+        let row = [
+            q.0 * p.0,
+            q.0 * p.1,
+            q.0,
+            q.1 * p.0,
+            q.1 * p.1,
+            q.1,
+            p.0,
+            p.1,
+            1.0,
+        ];
         for i in 0..9 {
             for j in 0..9 {
                 m[(i, j)] += row[i] * row[j];
@@ -209,11 +237,21 @@ pub fn sampson(f: &M3, a: (f64, f64), b: (f64, f64)) -> f64 {
     let ftx2 = f.transpose() * x2;
     let e = x2.dot(&fx1);
     let d = fx1.x * fx1.x + fx1.y * fx1.y + ftx2.x * ftx2.x + ftx2.y * ftx2.y;
-    if d < 1e-18 { f64::MAX } else { e * e / d }
+    if d < 1e-18 {
+        f64::MAX
+    } else {
+        e * e / d
+    }
 }
 
 /// RANSAC over the 8-point solver. Returns inlier indices.
-pub fn ransac_fundamental(a: &[(f64, f64)], b: &[(f64, f64)], thresh_px: f64, iters: usize, seed: u64) -> Vec<usize> {
+pub fn ransac_fundamental(
+    a: &[(f64, f64)],
+    b: &[(f64, f64)],
+    thresh_px: f64,
+    iters: usize,
+    seed: u64,
+) -> Vec<usize> {
     let n = a.len();
     if n < 12 {
         return Vec::new();
@@ -239,7 +277,9 @@ pub fn ransac_fundamental(a: &[(f64, f64)], b: &[(f64, f64)], thresh_px: f64, it
         }
         let sa: Vec<_> = idx.iter().map(|&i| a[i]).collect();
         let sb: Vec<_> = idx.iter().map(|&i| b[i]).collect();
-        let Some(f) = fundamental(&sa, &sb) else { continue };
+        let Some(f) = fundamental(&sa, &sb) else {
+            continue;
+        };
         let inl: Vec<usize> = (0..n).filter(|&i| sampson(&f, a[i], b[i]) < t2).collect();
         if inl.len() > best.len() {
             best = inl;
@@ -264,7 +304,15 @@ mod tests {
     use super::*;
 
     fn k() -> Intrinsics {
-        Intrinsics { f: 3000.0, cx: 2000.0, cy: 1500.0, k1: -0.02, k2: 0.005, width: 4000, height: 3000 }
+        Intrinsics {
+            f: 3000.0,
+            cx: 2000.0,
+            cy: 1500.0,
+            k1: -0.02,
+            k2: 0.005,
+            width: 4000,
+            height: 3000,
+        }
     }
 
     #[test]
@@ -294,7 +342,10 @@ mod tests {
             Pose::from_angles(V3::new(20.0, 5.0, 61.0), 190.0, -80.0, 0.0),
             Pose::from_angles(V3::new(-15.0, 30.0, 59.0), 45.0, -50.0, 0.0),
         ];
-        let obs: Vec<_> = poses.iter().map(|ps| (*ps, k.undistort(ps.project(&k, &x).unwrap()))).collect();
+        let obs: Vec<_> = poses
+            .iter()
+            .map(|ps| (*ps, k.undistort(ps.project(&k, &x).unwrap())))
+            .collect();
         let t = triangulate(&obs).unwrap();
         assert!((t - x).norm() < 1e-6, "{t:?}");
     }
@@ -313,12 +364,23 @@ mod tests {
         };
         for i in 0..200 {
             let x = V3::new(r() * 60.0 + 12.0, r() * 50.0, r() * 15.0);
-            let (Some(ua), Some(ub)) = (a.project(&k, &x), b.project(&k, &x)) else { continue };
+            let (Some(ua), Some(ub)) = (a.project(&k, &x), b.project(&k, &x)) else {
+                continue;
+            };
             pa.push((ua.x, ua.y));
-            pb.push(if i % 4 == 0 { (r() * 4000.0 + 2000.0, r() * 3000.0 + 1500.0) } else { (ub.x, ub.y) });
+            pb.push(if i % 4 == 0 {
+                (r() * 4000.0 + 2000.0, r() * 3000.0 + 1500.0)
+            } else {
+                (ub.x, ub.y)
+            });
         }
         let inl = ransac_fundamental(&pa, &pb, 2.0, 600, 3);
         let true_inl = (0..pa.len()).filter(|i| i % 4 != 0).count();
-        assert!(inl.len() >= true_inl * 9 / 10 && inl.len() <= true_inl + 3, "{} vs {}", inl.len(), true_inl);
+        assert!(
+            inl.len() >= true_inl * 9 / 10 && inl.len() <= true_inl + 3,
+            "{} vs {}",
+            inl.len(),
+            true_inl
+        );
     }
 }

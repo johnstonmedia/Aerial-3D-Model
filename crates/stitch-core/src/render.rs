@@ -57,7 +57,9 @@ pub struct Manifest {
 }
 
 pub fn tile_path(root: &Path, z: u32, x: usize, y: usize) -> PathBuf {
-    root.join(z.to_string()).join(x.to_string()).join(format!("{y}.jpg"))
+    root.join(z.to_string())
+        .join(x.to_string())
+        .join(format!("{y}.jpg"))
 }
 
 pub fn tiles_dir(project: &Project) -> PathBuf {
@@ -87,11 +89,15 @@ pub fn layer_tiles_dir(project: &Project, layer: Layer) -> PathBuf {
 }
 
 pub fn read_layer_manifest(project: &Project, layer: Layer) -> Result<Manifest> {
-    Ok(serde_json::from_slice(&std::fs::read(layer_dir(project, layer).join("manifest.json"))?)?)
+    Ok(serde_json::from_slice(&std::fs::read(
+        layer_dir(project, layer).join("manifest.json"),
+    )?)?)
 }
 
 pub fn read_manifest(project: &Project) -> Result<Manifest> {
-    Ok(serde_json::from_slice(&std::fs::read(project.result_dir().join("manifest.json"))?)?)
+    Ok(serde_json::from_slice(&std::fs::read(
+        project.result_dir().join("manifest.json"),
+    )?)?)
 }
 
 struct Slot {
@@ -122,7 +128,11 @@ pub(crate) struct RasterCache {
 
 impl RasterCache {
     pub(crate) fn new(budget: usize) -> Self {
-        Self { budget, tick: AtomicU64::new(0), map: Mutex::new((HashMap::new(), 0)) }
+        Self {
+            budget,
+            tick: AtomicU64::new(0),
+            map: Mutex::new((HashMap::new(), 0)),
+        }
     }
 
     fn evict(&self, map: &mut HashMap<usize, Slot>, total: &mut usize, keep: usize) {
@@ -204,7 +214,12 @@ struct Source<'a> {
 
 fn corners(p: &Placed) -> [(f64, f64); 4] {
     let (w, h) = (p.width as f64, p.height as f64);
-    [p.full_to_frame(0.0, 0.0), p.full_to_frame(w, 0.0), p.full_to_frame(w, h), p.full_to_frame(0.0, h)]
+    [
+        p.full_to_frame(0.0, 0.0),
+        p.full_to_frame(w, 0.0),
+        p.full_to_frame(w, h),
+        p.full_to_frame(0.0, h),
+    ]
 }
 
 pub fn render(project: &Project, al: &Alignment, profile: &Profile, ctx: &Ctx) -> Result<Manifest> {
@@ -234,7 +249,12 @@ pub fn render(project: &Project, al: &Alignment, profile: &Profile, ctx: &Ctx) -
         while (f * 2) as f64 <= ratio {
             f *= 2;
         }
-        sources.push(Source { p, inv: p.sim.inverse(), f, bbox: (bx, by, bx2, by2) });
+        sources.push(Source {
+            p,
+            inv: p.sim.inverse(),
+            f,
+            bbox: (bx, by, bx2, by2),
+        });
     }
     let left = (minx / gsd).floor() * gsd;
     let top = (maxy / gsd).ceil() * gsd;
@@ -328,7 +348,15 @@ pub fn render(project: &Project, al: &Alignment, profile: &Profile, ctx: &Ctx) -
     build_pyramid(&root, max_zoom, written.into_inner().unwrap(), ctx)?;
 
     let (epsg, utm_left, utm_top) = match &al.frame {
-        Frame::Utm { zone, origin_e, origin_n } => (Some(zone.epsg()), Some(origin_e + left), Some(origin_n + top)),
+        Frame::Utm {
+            zone,
+            origin_e,
+            origin_n,
+        } => (
+            Some(zone.epsg()),
+            Some(origin_e + left),
+            Some(origin_n + top),
+        ),
         Frame::Local => (None, None, None),
     };
     let manifest = Manifest {
@@ -348,7 +376,10 @@ pub fn render(project: &Project, al: &Alignment, profile: &Profile, ctx: &Ctx) -
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0),
     };
-    std::fs::write(project.result_dir().join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
+    std::fs::write(
+        project.result_dir().join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest)?,
+    )?;
     ctx.report("done", 1, 1, "Map ready");
     Ok(manifest)
 }
@@ -409,7 +440,12 @@ fn contributors(sources: &[Source], cands: &[usize], fr: (f64, f64, f64, f64)) -
     if !keep.iter().any(|&k| k) {
         return cands;
     }
-    cands.into_iter().zip(keep).filter(|(_, k)| *k).map(|(i, _)| i).collect()
+    cands
+        .into_iter()
+        .zip(keep)
+        .filter(|(_, k)| *k)
+        .map(|(i, _)| i)
+        .collect()
 }
 
 fn draw_tile(rasters: &[(&Source, Arc<Rgb>)], x0: f64, y1: f64, gsd: f64) -> Option<Vec<u8>> {
@@ -433,7 +469,9 @@ fn draw_tile(rasters: &[(&Source, Arc<Rgb>)], x0: f64, y1: f64, gsd: f64) -> Opt
                     continue;
                 }
                 let f = s.f as f64;
-                let Some(c) = r.sample(x / f, y / f) else { continue };
+                let Some(c) = r.sample(x / f, y / f) else {
+                    continue;
+                };
                 let dx = (x.min(fw - x) / (fw / 2.0)) as f32;
                 let dy = (y.min(fh - y) / (fh / 2.0)) as f32;
                 let w = (dx * dy).powi(BLEND_POW) + 1e-30;
@@ -462,11 +500,21 @@ fn draw_tile(rasters: &[(&Source, Arc<Rgb>)], x0: f64, y1: f64, gsd: f64) -> Opt
 }
 
 /// Builds zoom levels max_zoom-1 … 0 from the written full-resolution tiles.
-pub(crate) fn build_pyramid(root: &Path, max_zoom: u32, level0: Vec<(usize, usize)>, ctx: &Ctx) -> Result<()> {
+pub(crate) fn build_pyramid(
+    root: &Path,
+    max_zoom: u32,
+    level0: Vec<(usize, usize)>,
+    ctx: &Ctx,
+) -> Result<()> {
     let mut level = level0;
     for z in (0..max_zoom).rev() {
         ctx.check()?;
-        ctx.report("pyramid", (max_zoom - z) as usize, max_zoom as usize, "Building zoom levels");
+        ctx.report(
+            "pyramid",
+            (max_zoom - z) as usize,
+            max_zoom as usize,
+            "Building zoom levels",
+        );
         let mut parents: Vec<(usize, usize)> = level.iter().map(|&(x, y)| (x / 2, y / 2)).collect();
         parents.sort();
         parents.dedup();

@@ -36,7 +36,11 @@ impl Rgb {
         for p in self.data.chunks_exact(3) {
             data.push(((p[0] as u32 * 77 + p[1] as u32 * 150 + p[2] as u32 * 29) >> 8) as u8);
         }
-        Gray { w: self.w, h: self.h, data }
+        Gray {
+            w: self.w,
+            h: self.h,
+            data,
+        }
     }
 
     /// Bilinear sample at continuous pixel coordinates (pixel centres at +0.5).
@@ -74,7 +78,11 @@ pub fn load_rgb(path: &Path) -> Result<Rgb> {
     let img = image::open(path).with_context(|| format!("decoding {}", path.display()))?;
     let rgb = img.into_rgb8();
     let (w, h) = rgb.dimensions();
-    Ok(Rgb { w: w as usize, h: h as usize, data: rgb.into_raw() })
+    Ok(Rgb {
+        w: w as usize,
+        h: h as usize,
+        data: rgb.into_raw(),
+    })
 }
 
 /// Integer box downsample by `f` (area average, exact for photos).
@@ -145,12 +153,20 @@ pub fn shrink_to(src: Rgb, max_side: usize) -> (Rgb, f64) {
         return (src, 1.0);
     }
     let f = long / max_side;
-    let boxed = if f >= 2 { box_down(&src, f) } else { src.clone() };
+    let boxed = if f >= 2 {
+        box_down(&src, f)
+    } else {
+        src.clone()
+    };
     drop(src);
     let s = max_side as f64 / long as f64;
     let w = ((boxed.w as f64) * (max_side as f64 / boxed.w.max(boxed.h) as f64)).round() as usize;
     let h = ((boxed.h as f64) * (max_side as f64 / boxed.w.max(boxed.h) as f64)).round() as usize;
-    let out = if w == boxed.w && h == boxed.h { boxed } else { resize_bilinear(&boxed, w.max(1), h.max(1)) };
+    let out = if w == boxed.w && h == boxed.h {
+        boxed
+    } else {
+        resize_bilinear(&boxed, w.max(1), h.max(1))
+    };
     (out, s)
 }
 

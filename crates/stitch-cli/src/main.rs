@@ -83,6 +83,31 @@ fn main() -> Result<()> {
                 m.vertices, m.triangles, m.wall_triangles, m.walls_from_oblique, t.elapsed().as_secs_f64()
             );
         }
+        Some("api") => {
+            // The web demo's backend: one request as JSON on stdin, the
+            // answer as JSON on stdout, progress as `@progress {json}` lines
+            // on stderr. See stitch_core::appapi.
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+            let req: stitch_core::appapi::Request = serde_json::from_str(&text)?;
+            let last = std::sync::Mutex::new(None::<std::time::Instant>);
+            let ctx = Ctx::new(
+                move |p| {
+                    let mut l = last.lock().unwrap();
+                    let due = l.map_or(true, |t| t.elapsed().as_millis() >= 150);
+                    if due || p.done == p.total || p.done == 0 {
+                        *l = Some(std::time::Instant::now());
+                        eprintln!("@progress {}", serde_json::to_string(&p).unwrap_or_default());
+                    }
+                },
+                Arc::new(AtomicBool::new(false)),
+            );
+            let out = match stitch_core::appapi::dispatch(&req, &ctx) {
+                Ok(v) => serde_json::json!({ "ok": true, "value": v }),
+                Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+            };
+            println!("{out}");
+        }
         Some("volume") if args.len() >= 3 => {
             // volume <project> "x,y x,y x,y ..." [lowest|mean|highest|<height m>]
             // Outline in the 3D model's frame (as the true ortho shows it).

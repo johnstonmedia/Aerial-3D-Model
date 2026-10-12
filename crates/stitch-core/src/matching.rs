@@ -66,7 +66,11 @@ pub struct MatchParams {
 
 impl Default for MatchParams {
     fn default() -> Self {
-        Self { min_inliers: 16, threshold_px: 3.0, iterations: 1500 }
+        Self {
+            min_inliers: 16,
+            threshold_px: 3.0,
+            iterations: 1500,
+        }
     }
 }
 
@@ -75,8 +79,14 @@ pub fn match_pair(a: &Features, b: &Features, seed: u64, p: &MatchParams) -> Opt
     if pairs.len() < p.min_inliers {
         return None;
     }
-    let src: Vec<(f64, f64)> = pairs.iter().map(|&(i, _)| (a.kps[i].x as f64, a.kps[i].y as f64)).collect();
-    let dst: Vec<(f64, f64)> = pairs.iter().map(|&(_, j)| (b.kps[j].x as f64, b.kps[j].y as f64)).collect();
+    let src: Vec<(f64, f64)> = pairs
+        .iter()
+        .map(|&(i, _)| (a.kps[i].x as f64, a.kps[i].y as f64))
+        .collect();
+    let dst: Vec<(f64, f64)> = pairs
+        .iter()
+        .map(|&(_, j)| (b.kps[j].x as f64, b.kps[j].y as f64))
+        .collect();
 
     let mut s = seed | 1;
     let mut rnd = |n: usize| {
@@ -110,7 +120,9 @@ pub fn match_pair(a: &Features, b: &Features, seed: u64, p: &MatchParams) -> Opt
         if i == j {
             continue;
         }
-        let Some(m) = Sim2::fit(&[src[i], src[j]], &[dst[i], dst[j]]) else { continue };
+        let Some(m) = Sim2::fit(&[src[i], src[j]], &[dst[i], dst[j]]) else {
+            continue;
+        };
         if !plausible(&m) {
             continue;
         }
@@ -153,7 +165,14 @@ pub fn match_pair(a: &Features, b: &Features, seed: u64, p: &MatchParams) -> Opt
     }
     let points = idx
         .iter()
-        .map(|&k| [src[k].0 as f32, src[k].1 as f32, dst[k].0 as f32, dst[k].1 as f32])
+        .map(|&k| {
+            [
+                src[k].0 as f32,
+                src[k].1 as f32,
+                dst[k].0 as f32,
+                dst[k].1 as f32,
+            ]
+        })
         .collect();
     Some(PairMatch { points, sim: model })
 }
