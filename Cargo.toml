@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/stitch-core", "crates/stitch-cli"]
+members = ["crates/stitch-core", "crates/stitch-cli", "app/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"

@@ -1,0 +1,22 @@
+{
+  "name": "aerial-stitch",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.0.0",
+    "leaflet": "^1.9.4"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/leaflet": "^1.9.12",
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0"
+  }
+}
