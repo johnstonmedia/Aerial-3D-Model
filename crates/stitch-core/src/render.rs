@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 pub const TILE: usize = 512;
 const JPEG_QUALITY: u8 = 88;
@@ -69,13 +69,25 @@ pub fn read_manifest(project: &Project) -> Result<Manifest> {
 }
 
 struct Slot {
+    /// The current (or in-flight) decode. Replaced when the photo has to be
+    /// loaded again after being fully released.
     cell: Arc<OnceLock<Option<Arc<Rgb>>>>,
+    /// Held by the cache; counts against the budget.
+    strong: Option<Arc<Rgb>>,
+    /// Still reachable after eviction while a tile is drawing from it — reused
+    /// rather than decoded a second time.
+    weak: Weak<Rgb>,
     last: u64,
     bytes: usize,
 }
 
-/// Byte-budgeted LRU of decoded (and possibly downsampled) photos. Concurrent
-/// requests for the same photo wait on one decode instead of each loading it.
+/// Byte-budgeted LRU of decoded (and possibly downsampled) photos.
+///
+/// Two properties keep memory bounded: concurrent requests for one photo wait
+/// on a single decode, and a photo evicted while still in use is handed back
+/// from its weak reference instead of being loaded again. (Without the second,
+/// a budget smaller than the working set thrashes and accumulates duplicate
+/// copies — the first real run on the Lite profile peaked at 5.4 GB.)
 struct RasterCache {
     budget: usize,
     tick: AtomicU64,
@@ -87,12 +99,49 @@ impl RasterCache {
         Self { budget, tick: AtomicU64::new(0), map: Mutex::new((HashMap::new(), 0)) }
     }
 
+    fn evict(&self, map: &mut HashMap<usize, Slot>, total: &mut usize, keep: usize) {
+        while *total > self.budget {
+            let victim = map
+                .iter()
+                .filter(|(k, s)| **k != keep && s.strong.is_some())
+                .min_by_key(|(_, s)| s.last)
+                .map(|(k, _)| *k);
+            let Some(k) = victim else { break };
+            let s = map.get_mut(&k).unwrap();
+            s.strong = None;
+            // The decode cell holds its own strong reference; replace it too,
+            // or the photo is never actually freed.
+            s.cell = Arc::new(OnceLock::new());
+            *total -= s.bytes;
+        }
+    }
+
     fn get(&self, idx: usize, load: impl FnOnce() -> Option<Rgb>) -> Option<Arc<Rgb>> {
         let t = self.tick.fetch_add(1, Ordering::Relaxed);
         let cell = {
             let mut g = self.map.lock().unwrap();
-            let slot = g.0.entry(idx).or_insert_with(|| Slot { cell: Arc::new(OnceLock::new()), last: t, bytes: 0 });
+            let (map, total) = &mut *g;
+            let slot = map.entry(idx).or_insert_with(|| Slot {
+                cell: Arc::new(OnceLock::new()),
+                strong: None,
+                weak: Weak::new(),
+                last: t,
+                bytes: 0,
+            });
             slot.last = t;
+            if let Some(a) = &slot.strong {
+                return Some(a.clone());
+            }
+            if let Some(a) = slot.weak.upgrade() {
+                slot.strong = Some(a.clone());
+                *total += slot.bytes;
+                self.evict(map, total, idx);
+                return Some(a);
+            }
+            if slot.cell.get().is_some() {
+                // Fully released since the last decode: start a new one.
+                slot.cell = Arc::new(OnceLock::new());
+            }
             slot.cell.clone()
         };
         let mut fresh = false;
@@ -103,26 +152,16 @@ impl RasterCache {
             })
             .clone();
         if fresh {
-            let bytes = v.as_ref().map_or(0, |r| r.bytes());
-            let mut g = self.map.lock().unwrap();
-            let (map, total) = &mut *g;
-            if let Some(s) = map.get_mut(&idx) {
-                s.bytes = bytes;
-                *total += bytes;
-            }
-            while *total > self.budget {
-                let victim = map
-                    .iter()
-                    .filter(|(k, s)| **k != idx && s.bytes > 0)
-                    .min_by_key(|(_, s)| s.last)
-                    .map(|(k, _)| *k);
-                match victim {
-                    Some(k) => {
-                        let s = map.remove(&k).unwrap();
-                        *total -= s.bytes;
-                    }
-                    None => break,
+            if let Some(a) = &v {
+                let mut g = self.map.lock().unwrap();
+                let (map, total) = &mut *g;
+                if let Some(s) = map.get_mut(&idx) {
+                    s.bytes = a.bytes();
+                    s.weak = Arc::downgrade(a);
+                    s.strong = Some(a.clone());
+                    *total += s.bytes;
                 }
+                self.evict(map, total, idx);
             }
         }
         v
@@ -218,22 +257,24 @@ pub fn render(project: &Project, al: &Alignment, profile: &Profile, ctx: &Ctx) -
     let done = AtomicUsize::new(0);
     ctx.report("render", 0, total_tiles, "Drawing the map");
 
+    // Draw in compact blocks of BLOCK×BLOCK tiles, blocks in serpentine order.
+    // A block needs only the handful of photos over it, so the working set
+    // fits the cache budget; whole tile rows across a wide survey did not.
+    const BLOCK: usize = 4;
     let mut todo: Vec<(usize, usize)> = index.keys().copied().collect();
-    // Row-major, serpentine: neighbouring tiles share photos, so this order
-    // keeps the cache warm.
-    todo.sort_by_key(|&(x, y)| (y, if y % 2 == 0 { x } else { usize::MAX - x }));
+    let block_key = |&(x, y): &(usize, usize)| {
+        let (bx, by) = (x / BLOCK, y / BLOCK);
+        (by, if by % 2 == 0 { bx } else { usize::MAX - bx })
+    };
+    todo.sort_by_key(|t| (block_key(t), t.1, t.0));
     let written: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
-    for row in todo.chunk_by(|a, b| a.1 == b.1) {
+    for row in todo.chunk_by(|a, b| block_key(a) == block_key(b)) {
         ctx.check()?;
         row.par_iter().try_for_each(|&(tx, ty)| -> Result<()> {
             let fr = tile_frame(tx, ty);
-            let rasters: Vec<(&Source, Arc<Rgb>)> = index[&(tx, ty)]
-                .iter()
-                .filter(|&&i| {
-                    let s = &sources[i];
-                    s.bbox.0 < fr.2 && s.bbox.2 > fr.0 && s.bbox.1 < fr.3 && s.bbox.3 > fr.1
-                })
-                .filter_map(|&idx| {
+            let rasters: Vec<(&Source, Arc<Rgb>)> = contributors(&sources, &index[&(tx, ty)], fr)
+                .into_iter()
+                .filter_map(|idx| {
                     let s = &sources[idx];
                     let r = cache.get(idx, || match load_rgb(&s.p.path) {
                         Ok(img) => Some(if s.f > 1 { box_down(&img, s.f) } else { img }),
@@ -296,6 +337,65 @@ pub fn render(project: &Project, al: &Alignment, profile: &Profile, ctx: &Ctx) -
     std::fs::write(project.result_dir().join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
     ctx.report("done", 1, 1, "Map ready");
     Ok(manifest)
+}
+
+/// Blend weight of a frame point in a photo: `(dx·dy)^BLEND_POW`, where dx and
+/// dy run from 0 at the photo's edge to 1 at its centre. 0 outside the photo.
+fn weight(s: &Source, fx: f64, fy: f64) -> f64 {
+    let (x, y) = s.p.frame_to_full(&s.inv, fx, fy);
+    let (w, h) = (s.p.width as f64, s.p.height as f64);
+    if x < 0.0 || y < 0.0 || x >= w || y >= h {
+        return 0.0;
+    }
+    let dx = x.min(w - x) / (w / 2.0);
+    let dy = y.min(h - y) / (h / 2.0);
+    (dx * dy).powi(BLEND_POW)
+}
+
+/// The photos that visibly contribute to a tile. Drone surveys overlap 70–80%,
+/// so a tile sits under a dozen or more photos — but with the sharp blend only
+/// the two or three most central ones carry any weight. Loading just those is
+/// what keeps memory within the profile's budget (and makes rendering faster).
+fn contributors(sources: &[Source], cands: &[usize], fr: (f64, f64, f64, f64)) -> Vec<usize> {
+    let cands: Vec<usize> = cands
+        .iter()
+        .copied()
+        .filter(|&i| {
+            let s = &sources[i];
+            s.bbox.0 < fr.2 && s.bbox.2 > fr.0 && s.bbox.1 < fr.3 && s.bbox.3 > fr.1
+        })
+        .collect();
+    if cands.len() <= 2 {
+        return cands;
+    }
+    // Sample a 5×5 grid over the tile; keep a photo if, at any sample, it
+    // carries at least 0.2% of the weight of the strongest photo there.
+    let mut keep = vec![false; cands.len()];
+    let mut ws = vec![0.0; cands.len()];
+    for sy in 0..5 {
+        for sx in 0..5 {
+            let fx = fr.0 + (fr.2 - fr.0) * sx as f64 / 4.0;
+            let fy = fr.1 + (fr.3 - fr.1) * sy as f64 / 4.0;
+            let mut best: f64 = 0.0;
+            for (k, &i) in cands.iter().enumerate() {
+                ws[k] = weight(&sources[i], fx, fy);
+                best = best.max(ws[k]);
+            }
+            if best > 0.0 {
+                for k in 0..cands.len() {
+                    if ws[k] >= best * 2e-3 {
+                        keep[k] = true;
+                    }
+                }
+            }
+        }
+    }
+    // A photo can still cover a tile edge between samples; if no sample hit
+    // anything, fall back to every candidate rather than leave a hole.
+    if !keep.iter().any(|&k| k) {
+        return cands;
+    }
+    cands.into_iter().zip(keep).filter(|(_, k)| *k).map(|(i, _)| i).collect()
 }
 
 fn draw_tile(rasters: &[(&Source, Arc<Rgb>)], x0: f64, y1: f64, gsd: f64) -> Option<Vec<u8>> {

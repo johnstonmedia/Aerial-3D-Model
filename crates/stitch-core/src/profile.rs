@@ -42,7 +42,7 @@ impl Profile {
                 kind,
                 work_size: 1600,
                 max_features: 2500,
-                render_cache_bytes: 3 << 30,
+                render_cache_bytes: 2 << 30,
                 threads: cores,
             },
             ProfileKind::High => Profile {

@@ -26,6 +26,15 @@ Local-first drone-photo stitcher. Read README.md first.
   a short soft transition. Low powers (4) visibly ghosted on real data.
 - No-data is near-black: real pixels are lifted to max-channel ≥ 12, and
   max-channel < 6 is empty (`is_nodata`). Keep that gap — JPEG rings at edges.
+- ⚠️ **Render memory** (measured on the 77 × 18 MP Aukerman set): Lite peaks at
+  ~1.1 GB, Standard ~2–3 GB. Three things hold that, all learned the hard way
+  (the first Lite run peaked at 5.4 GB):
+  1. `contributors()` loads only photos that visibly contribute to a tile
+     (~3 of the ~15 covering it in a 75%-overlap survey).
+  2. On eviction the cache drops BOTH its strong ref and the decode cell (the
+     `OnceLock` holds its own `Arc` — dropping only one freed nothing).
+  3. Tiles are drawn in 4×4 blocks, not whole rows, so the working set fits.
+  Re-measure with a per-stage RSS sampler if you touch render.rs.
 - Caches are keyed by a file fingerprint (size + mtime + name) and the
   profile's work size, so changing profile recomputes features.
 - Verified on OpenDroneMap's `odm_data_aukerman` (77 × 18 MP): all placed,
