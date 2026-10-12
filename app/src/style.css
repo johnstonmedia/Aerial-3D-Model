@@ -146,3 +146,7 @@ main { display: flex; flex-direction: column; }
 .v3d-tools label { margin: 0; display: flex; gap: 6px; align-items: center; }
 .v3d-tools input[type="range"] { width: 90px; margin: 0; }
 .v3d-tools .small-btn { margin: 0; padding: 2px 8px; }
+.layer-switch { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 1000; display: flex;
+  background: rgba(11,17,24,0.85); border: 1px solid var(--line); border-radius: 9px; padding: 3px; gap: 2px; }
+.layer-switch button { border: none; background: none; padding: 5px 14px; border-radius: 7px; color: var(--dim); }
+.layer-switch button.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }

@@ -4,7 +4,9 @@
 
 pub mod ba;
 pub mod dense;
+pub mod dsm;
 pub mod geometry;
+pub mod ortho;
 pub mod ply;
 pub mod sparse;
 
@@ -60,5 +62,26 @@ pub fn run_dense(project: &Project, ctx: &Ctx) -> Result<(usize, f64)> {
     let vp: Vec<[f32; 3]> = cloud.points.iter().step_by(step).copied().collect();
     let vc: Vec<[u8; 3]> = cloud.colors.iter().step_by(step).copied().collect();
     ply::write_ply(&dir.join("view.ply"), &vp, &vc, &origin_comment(&s))?;
+    std::fs::write(dir.join("dense.voxel"), format!("{}", cloud.voxel_m))?;
     Ok((cloud.points.len(), cloud.voxel_m))
+}
+
+/// Surface model + true orthophoto from the dense cloud. Writes
+/// `result/3d/dsm.bin` and `result/ortho/` (tiles + manifest).
+pub fn run_ortho(project: &Project, ctx: &Ctx) -> Result<crate::render::Manifest> {
+    let s = load_sparse(project)?;
+    let profile = crate::pipeline::effective_profile(project);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(profile.threads).build()?;
+    pool.install(|| {
+        ctx.report("dsm", 0, 1, "Building the surface model");
+        let voxel = dense_voxel(project).unwrap_or(0.25);
+        let d = dsm::build_dsm(&out_dir(project).join("dense.ply"), voxel, &profile)?;
+        std::fs::write(out_dir(project).join("dsm.json"), serde_json::to_vec(&d)?)?;
+        ortho::render_ortho(project, &s, &d, &profile, ctx)
+    })
+}
+
+/// The voxel size the dense cloud was fused at (recorded by `run_dense`).
+fn dense_voxel(project: &Project) -> Option<f64> {
+    std::fs::read_to_string(out_dir(project).join("dense.voxel")).ok()?.trim().parse().ok()
 }

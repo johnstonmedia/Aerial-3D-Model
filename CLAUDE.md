@@ -107,6 +107,19 @@ Local-first drone-photo stitcher. Read README.md first.
   "Export point cloud" copies the full `dense. py`. 4 M points was too slow to
   load in a software-GL test browser — integrated GPUs deserve the same care.
 
+## Surface model + true orthophoto (recon/dsm.rs, recon/ortho.rs)
+- DSM: per-cell 2nd-highest point (top surface, rejects a lone spike), then
+  despike, remove islands < 25 m², fill holes ENCLOSED by surface (ponds)
+  completely and open-edge holes only at the rim, 3×3 median.
+- True ortho: per DSM cell the top-3 cameras that SEE it (ray-march against
+  the DSM), scored by centredness⁸ × ray-verticality⁴; per pixel blended with
+  per-pixel centredness. Same tile/pyramid/manifest format as the 2D map, in
+  `result/ortho/`, so viewer and exports are shared (`render::Layer`).
+- ⚠️ Visibility needs slack (start 0.5 m above surface, occluder must stand
+  0.5 m proud) and a fallback to the best camera: with 0.25 m, noise on a
+  plain roof made every camera "occluded" and left a black hole in the roof.
+- Aukerman: 10469×7290 @ 2.9 cm, 20–60 s, peak ~2.2 GB (Standard).
+
 ## App notes (app/)
 - Tiles reach the webview through a custom `tiles://` protocol (served as
   `http://tiles.localhost/` on Windows) reading the open project's folder — no

@@ -43,8 +43,13 @@ fn main() -> Result<()> {
                 Some("jpg" | "jpeg") => Format::Jpeg,
                 _ => bail!("output must end in .tif, .png or .jpg"),
             };
-            let zoom = args.get(3).map(|z| z.parse()).transpose()?;
-            let out = export(&project, &ExportOptions { format, zoom, path }, &ctx)?;
+            let zoom = args.get(3).filter(|a| !a.starts_with("--")).map(|z| z.parse()).transpose()?;
+            let layer = if args.iter().any(|a| a == "--ortho") {
+                stitch_core::render::Layer::Ortho
+            } else {
+                stitch_core::render::Layer::Mosaic
+            };
+            let out = export(&project, &ExportOptions { format, layer, zoom, path }, &ctx)?;
             println!("wrote {}", out.display());
         }
         Some("sparse") if args.len() >= 2 => {
@@ -62,6 +67,12 @@ fn main() -> Result<()> {
             let t = std::time::Instant::now();
             let (n, voxel) = stitch_core::recon::run_dense(&project, &ctx)?;
             println!("dense points={n} voxel={voxel:.3}m took {:.1}s", t.elapsed().as_secs_f64());
+        }
+        Some("ortho") if args.len() >= 2 => {
+            let project = Project::open(&PathBuf::from(&args[1]))?;
+            let t = std::time::Instant::now();
+            let m = stitch_core::recon::run_ortho(&project, &ctx)?;
+            println!("true ortho {}x{} gsd={:.4} took {:.1}s", m.width, m.height, m.gsd, t.elapsed().as_secs_f64());
         }
         Some("plan") => {
             // Reads a PlanInput as JSON on stdin, prints the Plan as JSON;

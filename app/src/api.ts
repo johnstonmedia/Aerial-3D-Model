@@ -66,6 +66,9 @@ export interface ProjectView {
   settings: Settings;
   manifest: Manifest | null;
   levels: LevelInfo[];
+  /** True orthophoto (built with the 3D model). */
+  ortho: Manifest | null;
+  ortho_levels: LevelInfo[];
   model3d: { points: number; sparse_points: number; version: number } | null;
 }
 
@@ -90,6 +93,7 @@ export interface JobFinished {
 }
 
 export type ExportFormat = "geotiff" | "png" | "jpeg";
+export type MapLayer = "mosaic" | "ortho";
 
 export const api = {
   systemInfo: () => invoke<SystemInfo>("system_info"),
@@ -101,8 +105,8 @@ export const api = {
   removePhotos: (dir: string, ids: number[]) => invoke<ProjectView>("remove_photos", { dir, ids }),
   saveSettings: (dir: string, settings: Settings) => invoke<ProjectView>("save_settings", { dir, settings }),
   process: (dir: string) => invoke<void>("process", { dir }),
-  exportMap: (dir: string, format: ExportFormat, zoom: number | null, path: string) =>
-    invoke<void>("export_map", { dir, format, zoom, path }),
+  exportMap: (dir: string, format: ExportFormat, layer: MapLayer, zoom: number | null, path: string) =>
+    invoke<void>("export_map", { dir, format, layer, zoom, path }),
   cancel: () => invoke<void>("cancel_job"),
   build3d: (dir: string) => invoke<void>("build_3d", { dir }),
   exportCloud: (dir: string, path: string) => invoke<string>("export_cloud", { dir, path }),

@@ -9,6 +9,7 @@ import { mountViewer3D, Viewer3D } from "./viewer3d";
 import {
   api,
   ExportFormat,
+  MapLayer,
   JobFinished,
   Progress,
   ProjectView,
@@ -25,9 +26,10 @@ const state: {
   recent: RecentProject[];
   busy: "process" | "export" | "3d" | null;
   tab: "map" | "3d";
+  layer: MapLayer;
   progress: Progress | null;
   notice: { kind: "ok" | "error" | "info"; text: string } | null;
-} = { sys: null, project: null, recent: [], busy: null, tab: "map", progress: null, notice: null };
+} = { sys: null, project: null, recent: [], busy: null, tab: "map", layer: "ortho", progress: null, notice: null };
 
 let map: L.Map | null = null;
 let viewer: Viewer3D | null = null;
@@ -204,7 +206,7 @@ function runPanel(p: ProjectView) {
            <button class="wide" data-action="build3d" ${p.photos.length < 3 ? "disabled" : ""}>
              ${p.model3d?.points ? "Rebuild 3D model" : "Build 3D model"}</button>
            ${
-             p.manifest
+             p.manifest || p.ortho
                ? `<button class="wide" data-action="export">Export map…</button>`
                : `<p class="hint">Processing reuses earlier work, so adding photos later only processes what's new.</p>`
            }`
@@ -240,10 +242,31 @@ function projectView(p: ProjectView) {
   </div>`;
 }
 
-function mapPane(p: ProjectView, m: ProjectView["manifest"]) {
+/** The map currently shown: the true orthophoto when it exists and is
+ *  selected, otherwise the 2D mosaic. */
+function shownLayer(p: ProjectView): { layer: MapLayer; m: ProjectView["manifest"]; levels: ProjectView["levels"] } {
+  if ((state.layer === "ortho" && p.ortho) || (!p.manifest && p.ortho)) {
+    return { layer: "ortho", m: p.ortho, levels: p.ortho_levels };
+  }
+  return { layer: "mosaic", m: p.manifest, levels: p.levels };
+}
+
+function layerSwitch(p: ProjectView) {
+  if (!p.ortho || !p.manifest) return "";
+  const cur = shownLayer(p).layer;
+  return `<div class="layer-switch">
+    <button class="${cur === "mosaic" ? "on" : ""}" data-action="layer-mosaic" title="Stitched from the photos assuming flat ground">Mosaic</button>
+    <button class="${cur === "ortho" ? "on" : ""}" data-action="layer-ortho" title="Projected onto the 3D surface: nothing leans">True ortho</button>
+  </div>`;
+}
+
+function mapPane(p: ProjectView, _m: ProjectView["manifest"]) {
+  const { layer, m } = shownLayer(p);
   return m
     ? `<div id="map"></div>
+       ${layerSwitch(p)}
        <div class="map-info">
+         ${layer === "ortho" ? "<b>True orthophoto</b> · " : ""}
          ${fmtPixels(m.width, m.height)} · ${fmtGsd(m.gsd, m.epsg != null)} · ${m.photos} photos
          ${m.epsg ? ` · EPSG:${m.epsg}` : " · not georeferenced"}
          <span id="cursor"></span>
@@ -278,8 +301,9 @@ function view3dPane(p: ProjectView) {
 }
 
 function exportDialog(p: ProjectView) {
-  const georef = p.manifest?.epsg != null;
-  const levels = p.levels
+  const shown = shownLayer(p);
+  const georef = shown.m?.epsg != null;
+  const levels = shown.levels
     .slice(0, 6)
     .map(
       (l, i) => `<option value="${l.zoom}" ${i === 0 ? "selected" : ""}>
@@ -289,7 +313,7 @@ function exportDialog(p: ProjectView) {
   return `
   <div class="modal-back" data-action="close-modal">
     <div class="modal">
-      <h3>Export map</h3>
+      <h3>Export ${shown.layer === "ortho" ? "true orthophoto" : "map"}</h3>
       <label>Format
         <select id="ex-format">
           <option value="geotiff">GeoTIFF — for GIS tools, any size, keeps location</option>
@@ -327,7 +351,7 @@ function render() {
   root.innerHTML = (p ? projectView(p) : homeView()) + (p && modal === "export" ? exportDialog(p) : "") + notice;
   if (p) {
     drawTrack(p);
-    if (state.tab === "map" && p.manifest) mountMap(p);
+    if (state.tab === "map" && shownLayer(p).m) mountMap(p);
     if (state.tab === "3d" && p.model3d) mount3d(p);
   }
 }
@@ -363,14 +387,16 @@ function tileBase() {
 }
 
 function mountMap(p: ProjectView) {
-  const m = p.manifest!;
+  const { layer, m: lm } = shownLayer(p);
+  const m = lm!;
+  const prefix = layer === "ortho" ? "ortho/" : "";
   const el = document.getElementById("map");
   if (!el) return;
   map = L.map(el, { crs: L.CRS.Simple, minZoom: 0, maxZoom: m.max_zoom + 2, zoomSnap: 0.5, attributionControl: false });
   const sw = map.unproject([0, m.height], m.max_zoom);
   const ne = map.unproject([m.width, 0], m.max_zoom);
   const bounds = L.latLngBounds(sw, ne);
-  L.tileLayer(`${tileBase()}{z}/{x}/{y}.jpg?v=${m.version}`, {
+  L.tileLayer(`${tileBase()}${prefix}{z}/{x}/{y}.jpg?v=${m.version}`, {
     tileSize: m.tile_size,
     maxNativeZoom: m.max_zoom,
     maxZoom: m.max_zoom + 2,
@@ -545,6 +571,12 @@ async function onAction(action: string) {
       return api.process(p.dir);
     case "cancel":
       return api.cancel();
+    case "layer-mosaic":
+      state.layer = "mosaic";
+      return render();
+    case "layer-ortho":
+      state.layer = "ortho";
+      return render();
     case "tab-map":
       state.tab = "map";
       return render();
@@ -593,7 +625,7 @@ async function onAction(action: string) {
       state.busy = "export";
       state.progress = { stage: "export", done: 0, total: 0, message: "Starting" };
       render();
-      return api.exportMap(p.dir, format, zoom, path);
+      return api.exportMap(p.dir, format, shownLayer(p).layer, zoom, path);
     }
   }
 }

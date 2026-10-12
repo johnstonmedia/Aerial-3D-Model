@@ -3,7 +3,7 @@
 //! JPEG is capped by the format at 65,500 px a side and is built in memory).
 
 use crate::project::Project;
-use crate::render::{is_nodata, read_manifest, read_tile, tiles_dir, Manifest, TILE};
+use crate::render::{is_nodata, read_tile, Manifest, TILE};
 use crate::Ctx;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,9 @@ pub enum Format {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportOptions {
     pub format: Format,
+    /// Which map to export: the 2D mosaic (default) or the true orthophoto.
+    #[serde(default)]
+    pub layer: crate::render::Layer,
     /// Zoom level to export; `None` = full resolution.
     pub zoom: Option<u32>,
     pub path: PathBuf,
@@ -45,11 +48,12 @@ pub fn levels(m: &Manifest) -> Vec<LevelInfo> {
 }
 
 pub fn export(project: &Project, opts: &ExportOptions, ctx: &Ctx) -> Result<PathBuf> {
-    let m = read_manifest(project).context("process the project before exporting")?;
+    let m = crate::render::read_layer_manifest(project, opts.layer)
+        .context("build this map before exporting it")?;
     let z = opts.zoom.unwrap_or(m.max_zoom).min(m.max_zoom);
     let lv = levels(&m).into_iter().find(|l| l.zoom == z).unwrap();
     let (w, h) = (lv.width as usize, lv.height as usize);
-    let root = tiles_dir(project);
+    let root = crate::render::layer_tiles_dir(project, opts.layer);
     let path = opts.path.clone();
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;

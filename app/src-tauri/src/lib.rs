@@ -76,6 +76,9 @@ struct ProjectView {
     settings: Settings,
     manifest: Option<Manifest>,
     levels: Vec<LevelInfo>,
+    /// True orthophoto, once the 3D model has been built.
+    ortho: Option<Manifest>,
+    ortho_levels: Vec<LevelInfo>,
     model3d: Option<Model3d>,
 }
 
@@ -112,6 +115,7 @@ fn model3d(p: &Project) -> Option<Model3d> {
 
 fn view(p: &Project) -> ProjectView {
     let manifest = read_manifest(p).ok();
+    let ortho = stitch_core::render::read_layer_manifest(p, stitch_core::render::Layer::Ortho).ok();
     let levels = manifest.as_ref().map(levels).unwrap_or_default();
     ProjectView {
         dir: p.dir.to_string_lossy().into_owned(),
@@ -135,6 +139,8 @@ fn view(p: &Project) -> ProjectView {
         settings: p.file.settings.clone(),
         manifest,
         levels,
+        ortho: ortho.clone(),
+        ortho_levels: ortho.as_ref().map(stitch_core::export::levels).unwrap_or_default(),
         model3d: model3d(p),
     }
 }
@@ -274,6 +280,7 @@ fn export_map(
     state: State<AppState>,
     dir: String,
     format: Format,
+    layer: Option<stitch_core::render::Layer>,
     zoom: Option<u32>,
     path: String,
 ) -> CmdResult<()> {
@@ -281,7 +288,10 @@ fn export_map(
     let ctx = ctx_for(&app, cancel.clone());
     std::thread::spawn(move || {
         let result = Project::open(Path::new(&dir))
-            .and_then(|p| export(&p, &ExportOptions { format, zoom, path: PathBuf::from(&path) }, &ctx));
+            .and_then(|p| {
+                let layer = layer.unwrap_or_default();
+                export(&p, &ExportOptions { format, layer, zoom, path: PathBuf::from(&path) }, &ctx)
+            });
         let done = match result {
             Ok(out) => JobFinished {
                 kind: "export",
@@ -309,6 +319,7 @@ fn build_3d(app: AppHandle, state: State<AppState>, dir: String) -> CmdResult<()
         let result = Project::open(Path::new(&dir)).and_then(|p| {
             let s = stitch_core::recon::run_sparse(&p, &ctx)?;
             let (n, voxel) = stitch_core::recon::run_dense(&p, &ctx)?;
+            stitch_core::recon::run_ortho(&p, &ctx)?;
             Ok((s, n, voxel))
         });
         let done = match result {
@@ -316,7 +327,7 @@ fn build_3d(app: AppHandle, state: State<AppState>, dir: String) -> CmdResult<()
                 kind: "3d",
                 ok: true,
                 message: format!(
-                    "3D model ready: {} points from {} photos ({} angled)",
+                    "3D model and true orthophoto ready: {} points from {} photos ({} angled)",
                     n,
                     s.cameras.len(),
                     s.cameras.iter().filter(|c| c.oblique).count()
@@ -488,10 +499,14 @@ fn serve_tile(app: &AppHandle, uri_path: &str) -> tauri::http::Response<Vec<u8>>
             Err(_) => not_found(),
         };
     }
+    let (base, parts): (PathBuf, Vec<&str>) = match parts.first() {
+        Some(&"ortho") => (dir.join("result").join("ortho").join("tiles"), parts[1..].to_vec()),
+        _ => (dir.join("result").join("tiles"), parts),
+    };
     let [z, x, y] = parts[..] else { return not_found() };
     let (Ok(z), Ok(x)) = (z.parse::<u32>(), x.parse::<usize>()) else { return not_found() };
     let Ok(y) = y.trim_end_matches(".jpg").parse::<usize>() else { return not_found() };
-    let path = stitch_core::render::tile_path(&dir.join("result").join("tiles"), z, x, y);
+    let path = stitch_core::render::tile_path(&base, z, x, y);
     match std::fs::read(path) {
         Ok(bytes) => tauri::http::Response::builder()
             .header("Content-Type", "image/jpeg")

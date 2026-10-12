@@ -64,6 +64,32 @@ pub fn tiles_dir(project: &Project) -> PathBuf {
     project.result_dir().join("tiles")
 }
 
+/// The two maps a project can have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Layer {
+    /// 2D mosaic (flat-ground assumption).
+    #[default]
+    Mosaic,
+    /// True orthophoto from the 3D surface model.
+    Ortho,
+}
+
+pub fn layer_dir(project: &Project, layer: Layer) -> PathBuf {
+    match layer {
+        Layer::Mosaic => project.result_dir(),
+        Layer::Ortho => project.result_dir().join("ortho"),
+    }
+}
+
+pub fn layer_tiles_dir(project: &Project, layer: Layer) -> PathBuf {
+    layer_dir(project, layer).join("tiles")
+}
+
+pub fn read_layer_manifest(project: &Project, layer: Layer) -> Result<Manifest> {
+    Ok(serde_json::from_slice(&std::fs::read(layer_dir(project, layer).join("manifest.json"))?)?)
+}
+
 pub fn read_manifest(project: &Project) -> Result<Manifest> {
     Ok(serde_json::from_slice(&std::fs::read(project.result_dir().join("manifest.json"))?)?)
 }
@@ -88,14 +114,14 @@ struct Slot {
 /// from its weak reference instead of being loaded again. (Without the second,
 /// a budget smaller than the working set thrashes and accumulates duplicate
 /// copies — the first real run on the Lite profile peaked at 5.4 GB.)
-struct RasterCache {
+pub(crate) struct RasterCache {
     budget: usize,
     tick: AtomicU64,
     map: Mutex<(HashMap<usize, Slot>, usize)>,
 }
 
 impl RasterCache {
-    fn new(budget: usize) -> Self {
+    pub(crate) fn new(budget: usize) -> Self {
         Self { budget, tick: AtomicU64::new(0), map: Mutex::new((HashMap::new(), 0)) }
     }
 
@@ -116,7 +142,7 @@ impl RasterCache {
         }
     }
 
-    fn get(&self, idx: usize, load: impl FnOnce() -> Option<Rgb>) -> Option<Arc<Rgb>> {
+    pub(crate) fn get(&self, idx: usize, load: impl FnOnce() -> Option<Rgb>) -> Option<Arc<Rgb>> {
         let t = self.tick.fetch_add(1, Ordering::Relaxed);
         let cell = {
             let mut g = self.map.lock().unwrap();
@@ -299,19 +325,7 @@ pub fn render(project: &Project, al: &Alignment, profile: &Profile, ctx: &Ctx) -
     }
     drop(cache);
 
-    let mut level: Vec<(usize, usize)> = written.into_inner().unwrap();
-    for z in (0..max_zoom).rev() {
-        ctx.check()?;
-        ctx.report("pyramid", (max_zoom - z) as usize, max_zoom as usize, "Building zoom levels");
-        let mut parents: Vec<(usize, usize)> = level.iter().map(|&(x, y)| (x / 2, y / 2)).collect();
-        parents.sort();
-        parents.dedup();
-        parents.par_iter().try_for_each(|&(px, py)| -> Result<()> {
-            let buf = downsample_children(&root, z + 1, px, py)?;
-            write_jpeg(&tile_path(&root, z, px, py), &buf, TILE, TILE)
-        })?;
-        level = parents;
-    }
+    build_pyramid(&root, max_zoom, written.into_inner().unwrap(), ctx)?;
 
     let (epsg, utm_left, utm_top) = match &al.frame {
         Frame::Utm { zone, origin_e, origin_n } => (Some(zone.epsg()), Some(origin_e + left), Some(origin_n + top)),
@@ -447,6 +461,33 @@ fn draw_tile(rasters: &[(&Source, Arc<Rgb>)], x0: f64, y1: f64, gsd: f64) -> Opt
     any.then_some(out)
 }
 
+/// Builds zoom levels max_zoom-1 … 0 from the written full-resolution tiles.
+pub(crate) fn build_pyramid(root: &Path, max_zoom: u32, level0: Vec<(usize, usize)>, ctx: &Ctx) -> Result<()> {
+    let mut level = level0;
+    for z in (0..max_zoom).rev() {
+        ctx.check()?;
+        ctx.report("pyramid", (max_zoom - z) as usize, max_zoom as usize, "Building zoom levels");
+        let mut parents: Vec<(usize, usize)> = level.iter().map(|&(x, y)| (x / 2, y / 2)).collect();
+        parents.sort();
+        parents.dedup();
+        parents.par_iter().try_for_each(|&(px, py)| -> Result<()> {
+            let buf = downsample_children(root, z + 1, px, py)?;
+            write_jpeg(&tile_path(root, z, px, py), &buf, TILE, TILE)
+        })?;
+        level = parents;
+    }
+    Ok(())
+}
+
+/// Number of zoom levels needed for an image of this size.
+pub(crate) fn max_zoom_for(width: u64, height: u64) -> u32 {
+    let mut z = 0u32;
+    while (TILE << z) < width.max(height) as usize {
+        z += 1;
+    }
+    z
+}
+
 pub fn read_tile(root: &Path, z: u32, x: usize, y: usize) -> Result<Option<Vec<u8>>> {
     let p = tile_path(root, z, x, y);
     if !p.exists() {
@@ -458,7 +499,7 @@ pub fn read_tile(root: &Path, z: u32, x: usize, y: usize) -> Result<Option<Vec<u
 
 /// Averages each 2×2 block of the four children, ignoring no-data pixels so
 /// the map's edge doesn't darken at lower zooms.
-fn downsample_children(root: &Path, z: u32, px: usize, py: usize) -> Result<Vec<u8>> {
+pub(crate) fn downsample_children(root: &Path, z: u32, px: usize, py: usize) -> Result<Vec<u8>> {
     let mut kids: [[Option<Vec<u8>>; 2]; 2] = Default::default();
     for (dy, row) in kids.iter_mut().enumerate() {
         for (dx, slot) in row.iter_mut().enumerate() {
