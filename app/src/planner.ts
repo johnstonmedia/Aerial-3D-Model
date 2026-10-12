@@ -2,10 +2,43 @@
 // the lawnmower grid, export Litchi CSV missions.
 import L from "leaflet";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { LonLat, Plan, PlanInput, planApi } from "./api";
+import { LonLat, Plan, PlanInput, Shot, planApi } from "./api";
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+
+const SHOT_PRESETS: { id: string; label: string; shots: Shot[] }[] = [
+  { id: "nadir", label: "Straight down — 2D map", shots: [{ pitch_deg: -90, yaw_offset_deg: 0 }] },
+  {
+    id: "nadir+fwd45",
+    label: "Straight down + 45° forward",
+    shots: [{ pitch_deg: -90, yaw_offset_deg: 0 }, { pitch_deg: -45, yaw_offset_deg: 0 }],
+  },
+  {
+    id: "nadir+4x45",
+    label: "Straight down + 45° on all 4 sides — 3D",
+    shots: [
+      { pitch_deg: -90, yaw_offset_deg: 0 },
+      { pitch_deg: -45, yaw_offset_deg: 0 },
+      { pitch_deg: -45, yaw_offset_deg: 90 },
+      { pitch_deg: -45, yaw_offset_deg: 180 },
+      { pitch_deg: -45, yaw_offset_deg: 270 },
+    ],
+  },
+  {
+    id: "4x45",
+    label: "45° on all 4 sides only — 3D",
+    shots: [0, 90, 180, 270].map((y) => ({ pitch_deg: -45, yaw_offset_deg: y })),
+  },
+];
+const PITCHES = [-90, -80, -75, -60, -45, -30, -15, 0];
+const DIRECTIONS: [number, string][] = [
+  [0, "Forward"], [45, "Forward-right"], [90, "Right"], [135, "Back-right"],
+  [180, "Back"], [225, "Back-left"], [270, "Left"], [315, "Forward-left"],
+];
+const pitchLabel = (p: number) => (p === -90 ? "Straight down" : p === 0 ? "Horizon (0°)" : `${-p}° down`);
+const samePreset = (a: Shot[], b: Shot[]) =>
+  a.length === b.length && a.every((s, i) => s.pitch_deg === b[i].pitch_deg && s.yaw_offset_deg === b[i].yaw_offset_deg);
 
 const MISSION_COLORS = ["#36e0c0", "#ffb547", "#7aa2ff", "#ff7ab6", "#b6ff7a", "#c792ea"];
 
@@ -129,6 +162,37 @@ export async function mountPlanner(root: HTMLElement, onBack: () => void, notify
   };
   const fmtArea = (m2: number) => (m2 >= 10000 ? `${(m2 / 10000).toFixed(2)} ha` : `${Math.round(m2)} m²`);
 
+  function shotsSection() {
+    const preset = SHOT_PRESETS.find((p) => samePreset(p.shots, input.shots));
+    const presetOpts = SHOT_PRESETS.map(
+      (p) => `<option value="${p.id}" ${preset?.id === p.id ? "selected" : ""}>${esc(p.label)}</option>`,
+    ).join("");
+    const rows = input.shots
+      .map(
+        (sh, i) => `<div class="shot-row">
+          <span class="shot-n">${i + 1}</span>
+          <select data-shot="${i}" data-k="pitch_deg">${PITCHES.map(
+            (p) => `<option value="${p}" ${p === sh.pitch_deg ? "selected" : ""}>${pitchLabel(p)}</option>`,
+          ).join("")}</select>
+          <select data-shot="${i}" data-k="yaw_offset_deg" ${sh.pitch_deg === -90 ? "disabled title=\"Direction doesn't matter straight down\"" : ""}>${DIRECTIONS.map(
+            ([d, l]) => `<option value="${d}" ${d === sh.yaw_offset_deg ? "selected" : ""}>${l}</option>`,
+          ).join("")}</select>
+          <button class="icon" data-p="shot-del" data-i="${i}" ${input.shots.length < 2 ? "disabled" : ""} title="Remove">×</button>
+        </div>`,
+      )
+      .join("");
+    return `
+      <div class="shots">
+        <label>Photos at each waypoint
+          <select data-f="shot_preset">${presetOpts}<option value="custom" ${preset ? "" : "selected"}>Custom</option></select>
+        </label>
+        ${rows}
+        <button class="small-btn" data-p="shot-add" ${input.shots.length >= 8 ? "disabled" : ""}>+ Add photo</button>
+        <p class="hint">Direction is relative to the way the drone is flying. Angled photos are for 3D models —
+          the 2D map uses only the straight-down ones.</p>
+      </div>`;
+  }
+
   function renderSide() {
     const side = document.getElementById("plan-side");
     if (!side) return;
@@ -186,6 +250,7 @@ export async function mountPlanner(root: HTMLElement, onBack: () => void, notify
             <option value="distance_interval" ${input.capture === "distance_interval" ? "selected" : ""}>Shoot while flying (experimental)</option>
           </select>
         </label>
+        ${input.capture === "photo_at_waypoint" ? shotsSection() : ""}
         <label>Height reference
           <select data-f="altitude_mode">
             <option value="relative_to_takeoff" ${input.altitude_mode === "relative_to_takeoff" ? "selected" : ""}>Above take-off point (flat sites)</option>
@@ -274,8 +339,20 @@ export async function mountPlanner(root: HTMLElement, onBack: () => void, notify
   });
   root.addEventListener("change", (e) => {
     const t = e.target as HTMLInputElement | HTMLSelectElement;
+    if (t.dataset.shot != null) {
+      const i = Number(t.dataset.shot);
+      const k = t.dataset.k as keyof Shot;
+      input.shots = input.shots.map((sh, j) => (j === i ? { ...sh, [k]: Number(t.value) } : sh));
+      if (k === "pitch_deg" && Number(t.value) === -90) input.shots[i].yaw_offset_deg = 0;
+      return void replan();
+    }
     const f = t.dataset.f;
     if (!f) return;
+    if (f === "shot_preset") {
+      const p = SHOT_PRESETS.find((x) => x.id === t.value);
+      if (p) input.shots = p.shots.map((x) => ({ ...x }));
+      return void replan();
+    }
     if (f === "goto") {
       const m = t.value.match(/(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)/);
       if (m) map.setView([Number(m[1]), Number(m[2])], 17);
@@ -298,6 +375,17 @@ export async function mountPlanner(root: HTMLElement, onBack: () => void, notify
         case "back":
           map.remove();
           return onBack();
+        case "shot-add": {
+          const last = input.shots[input.shots.length - 1];
+          const next = last && last.pitch_deg !== -90
+            ? { pitch_deg: last.pitch_deg, yaw_offset_deg: (last.yaw_offset_deg + 90) % 360 }
+            : { pitch_deg: -45, yaw_offset_deg: 0 };
+          input.shots = [...input.shots, next];
+          return void replan();
+        }
+        case "shot-del":
+          input.shots = input.shots.filter((_, j) => j !== Number(b.dataset.i));
+          return void replan();
         case "clear":
           input.boundary = [];
           drawArea();
@@ -321,6 +409,7 @@ export async function mountPlanner(root: HTMLElement, onBack: () => void, notify
           const f = await open({ title: "Open plan", filters: [{ name: "Plan", extensions: ["json"] }] });
           if (typeof f !== "string") return;
           input = await planApi.load(f);
+          if (!input.shots?.length) input.shots = [{ pitch_deg: -90, yaw_offset_deg: 0 }];
           drawArea();
           fitArea();
           return void replan();

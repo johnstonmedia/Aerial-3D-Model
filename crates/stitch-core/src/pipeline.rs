@@ -85,7 +85,13 @@ pub struct Summary {
     pub height: u64,
     pub gsd: f64,
     pub georeferenced: bool,
+    /// Angled photos left out of the 2D map.
+    pub oblique_skipped: usize,
 }
+
+/// Photos tilted less steeply than this are treated as oblique and left out
+/// of the 2D map. -90 is straight down.
+pub const OBLIQUE_PITCH_DEG: f64 = -75.0;
 
 pub fn effective_profile(project: &Project) -> Profile {
     match project.file.settings.profile {
@@ -98,10 +104,21 @@ pub fn process(project: &Project, ctx: &Ctx) -> Result<Summary> {
     let profile = effective_profile(project);
     let pool = rayon::ThreadPoolBuilder::new().num_threads(profile.threads).build()?;
     pool.install(|| {
-        let photos: Vec<&PhotoEntry> =
+        let usable: Vec<&PhotoEntry> =
             project.file.photos.iter().filter(|p| p.enabled && p.path.exists()).collect();
+        // Angled (oblique) shots are for 3D; they'd smear a flat map. DJI
+        // records the gimbal pitch, so they can be told apart reliably.
+        let (photos, oblique): (Vec<&PhotoEntry>, Vec<&PhotoEntry>) =
+            usable.into_iter().partition(|p| p.meta.pitch.map_or(true, |pitch| pitch <= OBLIQUE_PITCH_DEG));
+        if !oblique.is_empty() {
+            ctx.report("features", 0, 0, format!("Skipping {} angled photos (kept for 3D)", oblique.len()));
+        }
         if photos.len() < 2 {
-            bail!("add at least two photos");
+            bail!(if oblique.is_empty() {
+                "add at least two photos"
+            } else {
+                "the map needs straight-down photos; these are all angled"
+            });
         }
         compute_features(project, &photos, &profile, ctx)?;
         let pairs = candidate_pairs(&photos, project.file.settings.neighbours);
@@ -123,6 +140,7 @@ pub fn process(project: &Project, ctx: &Ctx) -> Result<Summary> {
             height: manifest.height,
             gsd: manifest.gsd,
             georeferenced: manifest.epsg.is_some(),
+            oblique_skipped: oblique.len(),
         })
     })
 }

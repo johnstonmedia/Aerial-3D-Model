@@ -127,3 +127,9 @@ input[type="range"] { padding: 0; accent-color: var(--accent); background: none;
 .leaflet-control-layers { background: var(--panel); color: var(--text); border: 1px solid var(--line) !important; }
 .leaflet-control-attribution { background: rgba(11,17,24,0.7) !important; color: var(--dim) !important; }
 .leaflet-control-attribution a { color: var(--dim) !important; }
+.shots { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 10px 0; padding-bottom: 8px; }
+.shot-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+.shot-row select { margin-top: 0; padding: 5px 6px; font-size: 12px; }
+.shot-row select:disabled { opacity: 0.5; }
+.shot-n { color: var(--accent); font-size: 12px; width: 14px; text-align: center; flex: none; }
+.small-btn { margin-top: 8px; padding: 5px 10px; font-size: 12px; }

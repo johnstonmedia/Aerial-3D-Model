@@ -216,7 +216,11 @@ fn process(app: AppHandle, state: State<AppState>, dir: String) -> CmdResult<()>
             Ok(s) => JobFinished {
                 kind: "process",
                 ok: true,
-                message: format!("Placed {} of {} photos", s.placed, s.photos),
+                message: if s.oblique_skipped > 0 {
+                    format!("Placed {} of {} photos · {} angled photos skipped (kept for 3D)", s.placed, s.photos, s.oblique_skipped)
+                } else {
+                    format!("Placed {} of {} photos", s.placed, s.photos)
+                },
                 detail: serde_json::to_value(&s).unwrap_or_default(),
             },
             Err(e) => JobFinished {

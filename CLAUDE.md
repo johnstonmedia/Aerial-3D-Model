@@ -49,6 +49,15 @@ Local-first drone-photo stitcher. Read README.md first.
   Action codes used: 0 stay (ms), 1 take photo, 5 tilt camera. These are well
   attested. The `photo_distinterval` column (DistanceInterval mode) is NOT
   officially documented — that mode is labelled experimental in the UI.
+- **Several photos per waypoint** (`shots`: tilt + direction relative to the
+  line). `waypoint_actions()` emits rotate (4) / tilt (5) only when they change
+  and settles (0) only before the first shot, so "nadir + 45° × 4 sides" fits
+  Litchi's **15 actions per waypoint** (13 on a mission's first waypoint).
+  ⚠️ Rotate-aircraft params are absolute headings in −180..180 (DJI SDK
+  convention); not verified against Litchi docs — confirm on a test flight.
+- The stitcher **skips oblique photos** (DJI XMP gimbal pitch > −75°,
+  `OBLIQUE_PITCH_DEG`): they're for 3D and would smear the 2D map. Photos with
+  no pitch metadata are kept.
 - 99 waypoints per Litchi mission → plans split; `batteries` packs short
   missions onto one battery in order. Don't conflate missions with batteries.
 - Obstacle avoidance during Litchi missions is unconfirmed (forum reports

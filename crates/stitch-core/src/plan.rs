@@ -61,6 +61,25 @@ pub fn camera_presets() -> Vec<Camera> {
     ]
 }
 
+/// One photo taken at each waypoint. Several shots per waypoint give the
+/// angled (oblique) views a 3D model needs; the 2D map uses only the
+/// straight-down ones.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Shot {
+    /// Camera tilt: -90 straight down, 0 at the horizon.
+    pub pitch_deg: f64,
+    /// Direction relative to the flight line, clockwise: 0 forward,
+    /// 90 right, 180 back, 270 left.
+    pub yaw_offset_deg: f64,
+}
+
+pub fn nadir_only() -> Vec<Shot> {
+    vec![Shot { pitch_deg: -90.0, yaw_offset_deg: 0.0 }]
+}
+
+/// Litchi allows 15 actions per waypoint.
+pub const LITCHI_MAX_ACTIONS: usize = 15;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureMode {
@@ -105,6 +124,9 @@ pub struct PlanInput {
     /// Extend each line past the boundary by this many photo spacings so the
     /// edges get full overlap.
     pub overshoot: f64,
+    /// Photos at each waypoint (PhotoAtWaypoint mode only).
+    #[serde(default = "nadir_only")]
+    pub shots: Vec<Shot>,
 }
 
 impl Default for PlanInput {
@@ -122,6 +144,7 @@ impl Default for PlanInput {
             altitude_mode: AltitudeMode::RelativeToTakeoff,
             battery_minutes: 18.0,
             overshoot: 1.0,
+            shots: nadir_only(),
         }
     }
 }
@@ -178,6 +201,8 @@ pub struct Plan {
 
 /// Seconds lost per photo stop: decelerate, settle, shoot, accelerate.
 const STOP_OVERHEAD_S: f64 = 3.0;
+/// Extra seconds for each additional shot at a waypoint (turn/tilt + shoot).
+const EXTRA_SHOT_S: f64 = 3.5;
 /// Seconds lost per turn at a line end.
 const TURN_OVERHEAD_S: f64 = 4.0;
 
@@ -208,6 +233,21 @@ pub fn plan(input: &PlanInput) -> Result<Plan> {
     }
     if !(5.0..=500.0).contains(&input.altitude_m) {
         bail!("height must be between 5 and 500 m");
+    }
+    if input.capture == CaptureMode::PhotoAtWaypoint {
+        if input.shots.is_empty() {
+            bail!("add at least one photo per waypoint");
+        }
+        if input.shots.iter().any(|s| !(-90.0..=0.0).contains(&s.pitch_deg)) {
+            bail!("camera tilt must be between -90° (straight down) and 0° (horizon)");
+        }
+        let worst = waypoint_actions(input, true, 0.0).len();
+        if worst > LITCHI_MAX_ACTIONS {
+            bail!(
+                "that many photos per waypoint needs {worst} Litchi actions; the limit is {LITCHI_MAX_ACTIONS}. \
+                 Remove a photo or group photos that share a direction."
+            );
+        }
     }
     let front = input.front_overlap.clamp(0.0, 0.95);
     let side = input.side_overlap.clamp(0.0, 0.95);
@@ -337,7 +377,7 @@ pub fn plan(input: &PlanInput) -> Result<Plan> {
                     let (lon, lat) = unproject(x0 + dir * step * i as f64, y);
                     wps.push(Waypoint { lon, lat, heading, photo: true, photo_dist_m: 0.0, first: false });
                 }
-                photos = n;
+                photos = n * input.shots.len().max(1);
             }
             CaptureMode::DistanceInterval => {
                 let (lon, lat) = unproject(x0, y);
@@ -356,7 +396,12 @@ pub fn plan(input: &PlanInput) -> Result<Plan> {
     // Split into missions by Litchi's waypoint limit and battery time.
     let battery_s = input.battery_minutes.max(3.0) * 60.0;
     let line_time = |l: &LineWps| {
-        let stops = if input.capture == CaptureMode::PhotoAtWaypoint { l.wps.len() as f64 * STOP_OVERHEAD_S } else { 0.0 };
+        let extra = (input.shots.len().max(1) - 1) as f64 * EXTRA_SHOT_S;
+        let stops = if input.capture == CaptureMode::PhotoAtWaypoint {
+            l.wps.len() as f64 * (STOP_OVERHEAD_S + extra)
+        } else {
+            0.0
+        };
         l.len / speed + stops + TURN_OVERHEAD_S
     };
     let mut missions: Vec<Mission> = Vec::new();
@@ -407,12 +452,24 @@ pub fn plan(input: &PlanInput) -> Result<Plan> {
             input.altitude_m
         ));
     }
+    if input.capture == CaptureMode::DistanceInterval && input.shots.len() > 1 {
+        warnings.push("Shooting while flying takes one straight-down photo per spot; extra angles need stop-and-shoot.".into());
+    }
     if input.capture == CaptureMode::DistanceInterval {
         warnings.push(
             "Distance-interval photos depend on Litchi's interval setting, which isn't officially documented for the \
              Mavic Air 2. Do a short test mission first, or use photo-at-each-waypoint."
                 .into(),
         );
+    }
+    if input.capture == CaptureMode::PhotoAtWaypoint && input.shots.iter().any(|s| s.pitch_deg > -80.0) {
+        warnings.push(
+            "Angled photos are for 3D models. The 2D map uses only the straight-down photos and skips the rest."
+                .into(),
+        );
+        if !input.shots.iter().any(|s| s.pitch_deg <= -80.0) {
+            warnings.push("No straight-down photo is included, so these photos can't make a 2D map.".into());
+        }
     }
     if front < 0.6 || side < 0.5 {
         warnings.push("Overlap below 60% front / 50% side often leaves gaps in the stitched map.".into());
@@ -457,7 +514,40 @@ const LITCHI_HEADER_FIXED: &str = "latitude,longitude,altitude(m),heading(deg),c
 const LITCHI_HEADER_TAIL: &str =
     "altitudemode,speed(m/s),poi_latitude,poi_longitude,poi_altitude(m),poi_altitudemode,photo_timeinterval,photo_distinterval";
 
-/// Action codes (Litchi CSV): -1 none, 0 stay (ms), 1 take photo, 5 tilt camera (deg).
+/// Litchi actions for a photo waypoint. Codes: 0 stay (ms), 1 take photo,
+/// 4 rotate aircraft (absolute heading, -180..180), 5 tilt camera (deg).
+///
+/// Turns and tilts are emitted only when they change, and only the first shot
+/// waits to settle: that keeps "straight down + 45° on all four sides" within
+/// Litchi's 15 actions per waypoint.
+pub fn waypoint_actions(input: &PlanInput, first: bool, line_heading: f64) -> Vec<(i32, f64)> {
+    let mut a: Vec<(i32, f64)> = Vec::new();
+    if first {
+        a.push((5, -90.0)); // camera straight down before the first leg
+        a.push((0, 2000.0));
+    }
+    let mut yaw = 0.0; // relative to the line; the drone arrives facing along it
+    let mut pitch = -90.0; // the gimbal column holds -90 between waypoints
+    for (i, s) in input.shots.iter().enumerate() {
+        if (s.yaw_offset_deg - yaw).rem_euclid(360.0) > 0.5 {
+            let abs = (line_heading + s.yaw_offset_deg).rem_euclid(360.0);
+            a.push((4, if abs > 180.0 { abs - 360.0 } else { abs }));
+            yaw = s.yaw_offset_deg;
+        }
+        if (s.pitch_deg - pitch).abs() > 0.5 {
+            a.push((5, s.pitch_deg));
+            pitch = s.pitch_deg;
+        }
+        if i == 0 {
+            a.push((0, 1000.0)); // settle on arrival
+        }
+        a.push((1, 0.0));
+    }
+    a
+}
+
+/// Action codes (Litchi CSV): -1 none, 0 stay (ms), 1 take photo,
+/// 4 rotate aircraft, 5 tilt camera (deg).
 pub fn litchi_csv(input: &PlanInput, mission: &Mission, speed_ms: f64) -> String {
     let mut out = String::new();
     out.push_str(LITCHI_HEADER_FIXED);
@@ -472,15 +562,13 @@ pub fn litchi_csv(input: &PlanInput, mission: &Mission, speed_ms: f64) -> String
         AltitudeMode::AboveGround => 1,
     };
     for w in &mission.waypoints {
-        let mut actions: Vec<(i32, f64)> = Vec::new();
-        if w.first {
-            actions.push((5, -90.0)); // tilt camera straight down
-            actions.push((0, 2000.0)); // let the gimbal settle
-        }
-        if w.photo {
-            actions.push((0, 1000.0)); // settle at the point
-            actions.push((1, 0.0)); // take photo
-        }
+        let actions = if w.photo {
+            waypoint_actions(input, w.first, w.heading)
+        } else if w.first {
+            vec![(5, -90.0), (0, 2000.0)]
+        } else {
+            Vec::new()
+        };
         // gimbalmode 2 = interpolate: hold the pitch below between waypoints.
         out.push_str(&format!(
             "{:.8},{:.8},{:.1},{:.1},0,0,2,-90",
@@ -611,6 +699,37 @@ mod tests {
         assert_eq!(cols, 8 + 30 + 8);
         assert!(rows.iter().all(|r| r.split(',').count() == cols));
         assert!(rows[1].contains(",5,-90,0,2000,0,1000,1,0,"), "{}", rows[1]);
+    }
+
+    #[test]
+    fn four_way_obliques_fit_litchi_action_limit() {
+        let mut shots = nadir_only();
+        for yaw in [0.0, 90.0, 180.0, 270.0] {
+            shots.push(Shot { pitch_deg: -45.0, yaw_offset_deg: yaw });
+        }
+        let input = PlanInput { boundary: square(200.0), shots, ..Default::default() };
+        let p = plan(&input).unwrap();
+        let a = waypoint_actions(&input, true, 90.0);
+        assert!(a.len() <= LITCHI_MAX_ACTIONS, "{a:?}");
+        // Five photos, four of them after a tilt to -45.
+        assert_eq!(a.iter().filter(|x| x.0 == 1).count(), 5);
+        assert_eq!(a.iter().filter(|x| x.0 == 5 && x.1 == -45.0).count(), 1);
+        // Rotations: right of an east-bound line is south (180), back is west (-90).
+        assert!(a.contains(&(4, 180.0)) && a.contains(&(4, -90.0)), "{a:?}");
+        let wps: usize = p.missions.iter().map(|m| m.waypoints.len()).sum();
+        assert_eq!(p.stats.photos, wps * 5);
+        assert!(p.warnings.iter().any(|w| w.contains("3D")));
+        // Every CSV row still has the same column count.
+        let csv = litchi_csv(&input, &p.missions[0], p.stats.speed_ms);
+        let n = csv.lines().next().unwrap().split(',').count();
+        assert!(csv.lines().all(|r| r.split(',').count() == n));
+    }
+
+    #[test]
+    fn too_many_shots_is_refused() {
+        let shots = (0..8).map(|i| Shot { pitch_deg: -30.0 - i as f64, yaw_offset_deg: i as f64 * 45.0 }).collect();
+        let input = PlanInput { boundary: square(200.0), shots, ..Default::default() };
+        assert!(plan(&input).unwrap_err().to_string().contains("15"));
     }
 
     #[test]

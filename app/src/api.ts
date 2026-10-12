@@ -132,6 +132,14 @@ export interface PlanInput {
   altitude_mode: "relative_to_takeoff" | "above_ground";
   battery_minutes: number;
   overshoot: number;
+  shots: Shot[];
+}
+
+/** One photo at each waypoint: tilt (-90 = straight down) and direction
+ *  relative to the flight line (0 forward, 90 right, 180 back, 270 left). */
+export interface Shot {
+  pitch_deg: number;
+  yaw_offset_deg: number;
 }
 
 export interface Waypoint {
