@@ -24,6 +24,7 @@ pub mod imgops;
 pub mod matching;
 pub mod meta;
 pub mod pipeline;
+pub mod plan;
 pub mod profile;
 pub mod project;
 pub mod render;

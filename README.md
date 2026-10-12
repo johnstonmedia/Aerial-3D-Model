@@ -13,6 +13,11 @@ No uploads, no accounts, no image limits.
 - **Local projects.** A project is a folder. Close it, reopen it, add more
   photos — earlier work is cached, so only the new photos are processed.
 - **Exports:** GeoTIFF (any size), PNG, JPEG, each with a world file.
+- **Flight planner.** Draw the area (or import a KML/KMZ from Google Earth),
+  pick the drone and height, and it lays out a mapping grid with the right
+  overlap, then exports **Litchi CSV** missions (split at Litchi's 99-waypoint
+  limit) plus a KML of the route to check in Google Earth. Mavic Air 2 and
+  Air 2S presets built in.
 
 ## Versions
 
@@ -66,6 +71,7 @@ Command line (handy for batch runs and testing):
 ```sh
 cargo run --release -p stitch-cli -- process ./my-project ./photos
 cargo run --release -p stitch-cli -- export  ./my-project ./map.tif
+cargo run --release -p stitch-cli -- plan ./out < plan.json  # flight plan → Litchi CSVs
 ```
 
 ## Layout

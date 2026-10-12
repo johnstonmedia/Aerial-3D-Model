@@ -4,6 +4,7 @@ import L from "leaflet";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { mountPlanner } from "./planner";
 import {
   api,
   ExportFormat,
@@ -55,6 +56,17 @@ function profileLabel(kind: string) {
   return { lite: "Lite (8 GB)", standard: "Standard (16 GB)", high: "High (32 GB+)" }[kind] ?? kind;
 }
 
+/** A notice that doesn't re-render the page — used by the flight planner. */
+function toast(kind: "ok" | "error" | "info", text: string) {
+  document.querySelectorAll(".notice.floating").forEach((n) => n.remove());
+  const d = document.createElement("div");
+  d.className = `notice floating ${kind}`;
+  d.innerHTML = `${esc(text)}<button class="icon">×</button>`;
+  d.querySelector("button")!.addEventListener("click", () => d.remove());
+  document.body.appendChild(d);
+  window.setTimeout(() => d.remove(), 8000);
+}
+
 function notify(kind: "ok" | "error" | "info", text: string) {
   state.notice = { kind, text };
   render();
@@ -82,6 +94,9 @@ function homeView() {
     <div class="home-actions">
       <button class="primary big" data-action="new">New project</button>
       <button class="big" data-action="open">Open project…</button>
+    </div>
+    <div class="home-actions" style="margin-top:12px">
+      <button class="link" data-action="planner">✈ Plan a mapping flight (Litchi)</button>
     </div>
     ${recent ? `<h3 class="section">Recent</h3><div class="recent-list">${recent}</div>` : ""}
     ${
@@ -424,6 +439,19 @@ async function onAction(action: string) {
       return newProject();
     case "open":
       return openProject();
+    case "planner": {
+      // Its own container, so the planner's listeners leave with it.
+      const host = document.createElement("div");
+      host.style.height = "100%";
+      root.replaceChildren(host);
+      return mountPlanner(
+        host,
+        () => {
+          render();
+        },
+        toast,
+      );
+    }
     case "home":
       state.project = null;
       state.recent = await api.recentProjects();

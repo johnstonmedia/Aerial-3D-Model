@@ -104,3 +104,79 @@ export const api = {
     invoke<void>("export_map", { dir, format, zoom, path }),
   cancel: () => invoke<void>("cancel_job"),
 };
+
+// ─────────────── Flight planner ───────────────
+
+export interface Camera {
+  name: string;
+  sensor_w_mm: number;
+  sensor_h_mm: number;
+  focal_mm: number;
+  image_w_px: number;
+  image_h_px: number;
+  min_photo_interval_s: number;
+}
+
+export type LonLat = [number, number];
+
+export interface PlanInput {
+  name: string;
+  boundary: LonLat[];
+  camera: Camera;
+  altitude_m: number;
+  front_overlap: number;
+  side_overlap: number;
+  speed_ms: number;
+  direction_deg: number | null;
+  capture: "photo_at_waypoint" | "distance_interval";
+  altitude_mode: "relative_to_takeoff" | "above_ground";
+  battery_minutes: number;
+  overshoot: number;
+}
+
+export interface Waypoint {
+  lon: number;
+  lat: number;
+  heading: number;
+  photo: boolean;
+  photo_dist_m: number;
+  first: boolean;
+}
+
+export interface Mission {
+  waypoints: Waypoint[];
+  lines: number;
+  photos: number;
+  distance_m: number;
+  duration_s: number;
+}
+
+export interface Plan {
+  missions: Mission[];
+  stats: {
+    area_m2: number;
+    gsd_cm: number;
+    footprint_w_m: number;
+    footprint_h_m: number;
+    line_spacing_m: number;
+    photo_spacing_m: number;
+    speed_ms: number;
+    direction_deg: number;
+    lines: number;
+    photos: number;
+    distance_m: number;
+    duration_s: number;
+    missions: number;
+    batteries: number;
+  };
+  warnings: string[];
+}
+
+export const planApi = {
+  defaults: () => invoke<[PlanInput, Camera[]]>("plan_defaults"),
+  plan: (input: PlanInput) => invoke<Plan>("plan_flight", { input }),
+  exportLitchi: (input: PlanInput, dir: string) => invoke<string[]>("export_litchi", { input, dir }),
+  importBoundary: (path: string) => invoke<LonLat[]>("import_boundary", { path }),
+  save: (path: string, input: PlanInput) => invoke<void>("save_plan", { path, input }),
+  load: (path: string) => invoke<PlanInput>("load_plan", { path }),
+};

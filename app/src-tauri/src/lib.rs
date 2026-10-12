@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use stitch_core::export::{export, levels, ExportOptions, Format, LevelInfo};
 use stitch_core::project::Settings;
 use stitch_core::render::{read_manifest, Manifest};
+use stitch_core::plan::{camera_presets, litchi_csv, parse_kml_boundary, plan, plan_kml, Camera, Plan, PlanInput};
 use stitch_core::{Ctx, Profile, ProfileKind, Project};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -278,6 +279,74 @@ fn set_profile(dir: String, profile: Option<ProfileKind>) -> CmdResult<ProjectVi
     Ok(view(&p))
 }
 
+
+// ─────────────────────────────── Flight planner ───────────────────────────────
+
+#[tauri::command]
+fn plan_defaults() -> (PlanInput, Vec<Camera>) {
+    (PlanInput::default(), camera_presets())
+}
+
+#[tauri::command]
+fn plan_flight(input: PlanInput) -> CmdResult<Plan> {
+    plan(&input).map_err(anyerr)
+}
+
+fn safe_name(s: &str) -> String {
+    let t: String = s.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    if t.is_empty() { "survey".into() } else { t }
+}
+
+/// Writes one Litchi CSV per mission plus a KML of the whole route.
+#[tauri::command]
+fn export_litchi(input: PlanInput, dir: String) -> CmdResult<Vec<String>> {
+    let p = plan(&input).map_err(anyerr)?;
+    let dir = PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let base = safe_name(&input.name);
+    let mut written = Vec::new();
+    let n = p.missions.len();
+    for (i, m) in p.missions.iter().enumerate() {
+        let file = if n == 1 { format!("{base}_litchi.csv") } else { format!("{base}_litchi_{}of{n}.csv", i + 1) };
+        let path = dir.join(file);
+        std::fs::write(&path, litchi_csv(&input, m, p.stats.speed_ms)).map_err(err)?;
+        written.push(path.to_string_lossy().into_owned());
+    }
+    let kml = dir.join(format!("{base}_route.kml"));
+    std::fs::write(&kml, plan_kml(&input, &p)).map_err(err)?;
+    written.push(kml.to_string_lossy().into_owned());
+    Ok(written)
+}
+
+/// Boundary from a .kml, or the first .kml inside a .kmz.
+#[tauri::command]
+fn import_boundary(path: String) -> CmdResult<Vec<(f64, f64)>> {
+    let bytes = std::fs::read(&path).map_err(err)?;
+    let text = if path.to_lowercase().ends_with(".kmz") {
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(err)?;
+        let name = (0..zip.len())
+            .filter_map(|i| zip.by_index(i).ok().map(|f| f.name().to_string()))
+            .find(|n| n.to_lowercase().ends_with(".kml"))
+            .ok_or("no KML inside that KMZ")?;
+        let mut s = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name(&name).map_err(err)?, &mut s).map_err(err)?;
+        s
+    } else {
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    parse_kml_boundary(&text).map_err(anyerr)
+}
+
+#[tauri::command]
+fn save_plan(path: String, input: PlanInput) -> CmdResult<()> {
+    std::fs::write(path, serde_json::to_vec_pretty(&input).map_err(err)?).map_err(err)
+}
+
+#[tauri::command]
+fn load_plan(path: String) -> CmdResult<PlanInput> {
+    serde_json::from_slice(&std::fs::read(path).map_err(err)?).map_err(err)
+}
+
 fn recent_file(app: &AppHandle) -> Option<PathBuf> {
     app.path().app_config_dir().ok().map(|d| d.join("recent.json"))
 }
@@ -357,6 +426,12 @@ pub fn run() {
             export_map,
             cancel_job,
             recent_projects,
+            plan_defaults,
+            plan_flight,
+            export_litchi,
+            import_boundary,
+            save_plan,
+            load_plan,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aerial Stitch");

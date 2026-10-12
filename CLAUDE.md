@@ -40,6 +40,24 @@ Local-first drone-photo stitcher. Read README.md first.
 - Verified on OpenDroneMap's `odm_data_aukerman` (77 × 18 MP): all placed,
   2.7 cm GSD, EPSG:32617. UTM maths checked against PROJ to the millimetre.
 
+## Flight planner (crates/stitch-core/src/plan.rs, app/src/planner.ts)
+- Owner flies a **DJI Mavic Air 2** with **Litchi**. The Air 2 has no
+  onboard waypoint engine: Litchi flies it by "virtual sticks" from the phone,
+  so the mission stops if the RC link drops. DJI Fly has no waypoints for the
+  Air 2, so a DJI WPML/KMZ export would be useless to this owner.
+- Litchi CSV: 8 fixed columns, 15 action type/param pairs, 8 tail columns.
+  Action codes used: 0 stay (ms), 1 take photo, 5 tilt camera. These are well
+  attested. The `photo_distinterval` column (DistanceInterval mode) is NOT
+  officially documented — that mode is labelled experimental in the UI.
+- 99 waypoints per Litchi mission → plans split; `batteries` packs short
+  missions onto one battery in order. Don't conflate missions with batteries.
+- Obstacle avoidance during Litchi missions is unconfirmed (forum reports
+  conflict). The app tells the pilot not to rely on it.
+- Geometry: camera long side across the line, heading along it. Footprint =
+  altitude × sensor / focal. Verified: Air 2 @ 80 m → 113.8 × 85.3 m, 2.84 cm/px.
+- Basemaps (Esri World Imagery, OSM) need internet and are in the CSP;
+  everything else in the planner works offline (KML import, plan, export).
+
 ## App notes (app/)
 - Tiles reach the webview through a custom `tiles://` protocol (served as
   `http://tiles.localhost/` on Windows) reading the open project's folder — no
