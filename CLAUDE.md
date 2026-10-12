@@ -176,7 +176,11 @@ Local-first drone-photo stitcher. Read README.md first.
   browser shim (or a real browser), not `node:wasi`.
 - Sample photos are fetched at runtime from OpenDroneMap's public
   odm_data_aukerman repo (it has no stated licence, so we don't re-host them).
-- Measured in Chromium, 16 × 18 MP: stitch 84 s.
+- Measured in Chromium, 16 × 18 MP, one core: stitch 84 s; full 3D build
+  (sparse → dense → ortho → textured mesh) 328 s, 620k points, 177k tris.
+- Pages must be switched on once by hand (Settings → Pages → Source:
+  GitHub Actions); `configure-pages` can't create the site with the
+  workflow token ("Resource not accessible by integration").
 
 ## CI
 `.github/workflows/build.yml` cross-compiles the Windows ARM64 NSIS installer on

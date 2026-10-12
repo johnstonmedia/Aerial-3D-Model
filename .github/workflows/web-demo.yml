@@ -50,9 +50,9 @@ jobs:
           npm ci
           npm run build:web
 
+      # Needs Settings → Pages → Source: "GitHub Actions" set once by hand;
+      # a workflow token isn't allowed to switch Pages on.
       - uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
