@@ -27,6 +27,7 @@ pub mod pipeline;
 pub mod plan;
 pub mod profile;
 pub mod project;
+pub mod recon;
 pub mod render;
 pub mod sim;
 pub mod solve;

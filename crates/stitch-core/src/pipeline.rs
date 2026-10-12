@@ -145,13 +145,13 @@ pub fn process(project: &Project, ctx: &Ctx) -> Result<Summary> {
     })
 }
 
-fn feature_path(project: &Project, key: &str, profile: &Profile) -> PathBuf {
+pub(crate) fn feature_path(project: &Project, key: &str, profile: &Profile) -> PathBuf {
     project
         .cache_dir("features")
         .join(format!("{key}_{}_{}.af", profile.work_size, profile.max_features))
 }
 
-fn compute_features(project: &Project, photos: &[&PhotoEntry], profile: &Profile, ctx: &Ctx) -> Result<()> {
+pub(crate) fn compute_features(project: &Project, photos: &[&PhotoEntry], profile: &Profile, ctx: &Ctx) -> Result<()> {
     std::fs::create_dir_all(project.cache_dir("features"))?;
     let todo: Vec<&&PhotoEntry> =
         photos.iter().filter(|p| !feature_path(project, &p.key, profile).exists()).collect();
@@ -177,18 +177,18 @@ fn compute_features(project: &Project, photos: &[&PhotoEntry], profile: &Profile
     })
 }
 
-fn load_features(project: &Project, p: &PhotoEntry, profile: &Profile) -> Result<Features> {
+pub(crate) fn load_features(project: &Project, p: &PhotoEntry, profile: &Profile) -> Result<Features> {
     let path = feature_path(project, &p.key, profile);
     Features::read(std::fs::File::open(&path).with_context(|| format!("missing features for {}", file_name(&p.path)))?)
 }
 
-fn file_name(p: &std::path::Path) -> String {
+pub(crate) fn file_name(p: &std::path::Path) -> String {
     p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 /// The UTM zone of the survey and each photo's position in it, relative to
 /// the survey's mean position.
-fn gps_positions(photos: &[&PhotoEntry]) -> Option<(UtmZone, f64, f64, Vec<Option<(f64, f64)>>)> {
+pub(crate) fn gps_positions(photos: &[&PhotoEntry]) -> Option<(UtmZone, f64, f64, Vec<Option<(f64, f64)>>)> {
     let with: Vec<(f64, f64)> =
         photos.iter().filter_map(|p| Some((p.meta.lon?, p.meta.lat?))).collect();
     if with.len() < 2 {
@@ -209,7 +209,7 @@ fn gps_positions(photos: &[&PhotoEntry]) -> Option<(UtmZone, f64, f64, Vec<Optio
 }
 
 /// Candidate pairs, as indices into `photos` with i < j.
-fn candidate_pairs(photos: &[&PhotoEntry], k: usize) -> Vec<(usize, usize)> {
+pub(crate) fn candidate_pairs(photos: &[&PhotoEntry], k: usize) -> Vec<(usize, usize)> {
     let mut set = HashSet::new();
     let n = photos.len();
     if let Some((_, _, _, pos)) = gps_positions(photos) {
@@ -261,7 +261,7 @@ fn match_path(project: &Project, a: &PhotoEntry, b: &PhotoEntry, profile: &Profi
         .join(format!("{}_{}_{}.json", a.key, b.key, profile.work_size))
 }
 
-fn compute_matches(
+pub(crate) fn compute_matches(
     project: &Project,
     photos: &[&PhotoEntry],
     pairs: &[(usize, usize)],
@@ -322,7 +322,7 @@ impl Dsu {
     }
 }
 
-fn solve_alignment(
+pub(crate) fn solve_alignment(
     project: &Project,
     photos: &[&PhotoEntry],
     pairs: &[(usize, usize)],

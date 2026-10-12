@@ -14,4 +14,5 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 kamadak-exif = "0.6"
 tiff = "0.11"
 png = "0.18"
+nalgebra = { version = "0.33", default-features = false, features = ["std", "serde-serialize"] }
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }

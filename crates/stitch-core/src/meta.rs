@@ -7,6 +7,7 @@ use std::io::{BufReader, Read};
 use std::path::Path;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PhotoMeta {
     pub width: u32,
     pub height: u32,
@@ -20,7 +21,15 @@ pub struct PhotoMeta {
     pub yaw: Option<f64>,
     /// Gimbal pitch, degrees; -90 is straight down (DJI XMP).
     pub pitch: Option<f64>,
+    /// Gimbal roll, degrees (DJI XMP).
+    pub roll: Option<f64>,
     pub timestamp: Option<String>,
+    /// Lens focal length, mm (EXIF).
+    pub focal_mm: Option<f64>,
+    /// 35 mm-equivalent focal length (EXIF), when the camera records it.
+    pub focal_35mm: Option<f64>,
+    pub make: Option<String>,
+    pub model: Option<String>,
 }
 
 impl PhotoMeta {
@@ -78,6 +87,19 @@ fn read_exif(exif: &exif::Exif, m: &mut PhotoMeta) {
             m.alt = Some(if below { -a } else { *a });
         }
     }
+    if let Some(v) = rationals(Tag::FocalLength) {
+        m.focal_mm = v.first().copied().filter(|f| *f > 0.0);
+    }
+    if let Some(f) = exif.get_field(Tag::FocalLengthIn35mmFilm, In::PRIMARY) {
+        m.focal_35mm = f.value.get_uint(0).map(|v| v as f64).filter(|v| *v > 0.0);
+    }
+    let text = |tag| {
+        exif.get_field(tag, In::PRIMARY)
+            .map(|f| f.display_value().to_string().trim_matches('"').trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    m.make = text(Tag::Make);
+    m.model = text(Tag::Model);
     if let Some(f) = exif.get_field(Tag::DateTimeOriginal, In::PRIMARY) {
         m.timestamp = Some(f.display_value().to_string());
     }
@@ -110,6 +132,7 @@ fn read_dji_xmp(xmp: &str, m: &mut PhotoMeta) {
     m.rel_alt = xmp_value(xmp, "RelativeAltitude");
     m.yaw = xmp_value(xmp, "GimbalYawDegree").or_else(|| xmp_value(xmp, "FlightYawDegree"));
     m.pitch = xmp_value(xmp, "GimbalPitchDegree");
+    m.roll = xmp_value(xmp, "GimbalRollDegree");
     if m.lat.is_none() {
         if let (Some(lat), Some(lon)) = (xmp_value(xmp, "GpsLatitude"), xmp_value(xmp, "GpsLongitude")) {
             m.lat = Some(lat);

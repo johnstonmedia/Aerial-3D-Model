@@ -47,6 +47,16 @@ fn main() -> Result<()> {
             let out = export(&project, &ExportOptions { format, zoom, path }, &ctx)?;
             println!("wrote {}", out.display());
         }
+        Some("sparse") if args.len() >= 2 => {
+            let project = Project::open(&PathBuf::from(&args[1]))?;
+            let t = std::time::Instant::now();
+            let s = stitch_core::recon::run_sparse(&project, &ctx)?;
+            println!(
+                "cameras={} skipped={} points={} rms={:.2}px f={:.1} k1={:.4} k2={:.4} took {:.1}s",
+                s.cameras.len(), s.skipped.len(), s.points.len(), s.rms_px,
+                s.intrinsics[0].f, s.intrinsics[0].k1, s.intrinsics[0].k2, t.elapsed().as_secs_f64()
+            );
+        }
         Some("plan") => {
             // Reads a PlanInput as JSON on stdin, prints the Plan as JSON;
             // with an output folder, also writes the Litchi CSVs and KML.
