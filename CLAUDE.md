@@ -98,6 +98,11 @@ Local-first drone-photo stitcher. Read README.md first.
   voxelises to fit the profile's point budget.
 - Measured on Aukerman (77 × 18 MP, Standard, 4-core sandbox): 4.27 M points,
   0.22 m voxel, peak RSS 783 MB, 17.5 min (almost all PatchMatch).
+- Speed-ups tried and measured: skipping textureless pixels and duplicate
+  propagation candidates gave only ~2% (1055 s → 1033 s) — aerial photos are
+  mostly textured and candidates rarely repeat exactly. Real gains would come
+  from fewer reference photos (high overlap means most surfaces are seen by
+  many) or fewer iterations, both of which trade detail.
 - The viewer loads `view.ply` (≤ 1.5 M points, strided from dense.ply);
   "Export point cloud" copies the full `dense. py`. 4 M points was too slow to
   load in a software-GL test browser — integrated GPUs deserve the same care.
