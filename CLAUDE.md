@@ -120,6 +120,31 @@ Local-first drone-photo stitcher. Read README.md first.
   plain roof made every camera "occluded" and left a black hole in the roof.
 - Aukerman: 10469×7290 @ 2.9 cm, 20–60 s, peak ~2.2 GB (Standard).
 
+## Textured surface + measuring (recon/mesh.rs, glb.rs, measure.rs)
+- Mesh = grid over the DSM; tops UV-mapped to ortho chunks, steep faces
+  (n.z < 0.6) painted into an atlas from the most frontal camera that sees
+  them. GLB (KHR_materials_unlit) with `asset.extras.local_offset`: glTF
+  (x, y, z) = (E−ox, U−oz, −(N−oy)). `model.glb` full, `model_view.glb` ≤ 10 M
+  texels for the viewer. Aukerman: 869k tris, 9 s, 1.6 GB peak.
+- `dsm.bin` is binary on purpose ("DSM1" header): JSON can't hold NaN.
+- Measuring frames: the 3D viewer converts picks back to the project/DSM
+  frame via `local_offset`; on the 2D map, the **true ortho**'s manifest
+  `left/top` are in the same frame, so volume is only offered there (the
+  mosaic's frame is the 2D solve's, not the DSM's).
+- Volume = cells inside the outline vs a level (lowest/mean/highest rim
+  point, or a height); missing cells are scaled in and the fraction reported.
+  Photogrammetry sees a water SURFACE, not the bed — volume of a full pond is
+  meaningless; it's for empty ponds, holes and stockpiles.
+- Measurement maths for the UI is in `app/src/measure.ts` (Newell area: true
+  area of a tilted face + its plan area). CLI: `aerial-stitch volume`.
+
+## Photos are never copied
+- A project stores photo PATHS. `add_photos` canonicalises paths and skips
+  any photo whose fingerprint is already in the project (a copy elsewhere).
+- The dense stage's shrunk photo copies (`cache/dense/*.view`, as big as the
+  photos themselves — 356 MB on Aukerman) are deleted at the end of the run;
+  depth maps (`*.depth`, the expensive part) stay cached.
+
 ## App notes (app/)
 - Tiles reach the webview through a custom `tiles://` protocol (served as
   `http://tiles.localhost/` on Windows) reading the open project's folder — no

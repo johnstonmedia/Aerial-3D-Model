@@ -554,5 +554,20 @@ pub fn reconstruct_dense(project: &Project, sp: &Sparse, profile: &Profile, ctx:
         points.push([v[0] / c, v[1] / c, v[2] / c]);
         colors.push([(v[3] / c) as u8, (v[4] / c) as u8, (v[5] / c) as u8]);
     }
+    // The reduced photo copies are only needed while depth runs, and are as
+    // big as the photos themselves: drop them. They are rebuilt from the
+    // originals in seconds if a later run needs them; the depth maps (the
+    // expensive part) stay cached.
+    remove_views(&dir);
     Ok(DenseCloud { points, colors, voxel_m: voxel })
+}
+
+fn remove_views(dir: &PathBuf) {
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            if e.path().extension().is_some_and(|x| x == "view") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
 }

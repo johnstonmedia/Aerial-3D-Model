@@ -87,6 +87,11 @@ struct Model3d {
     /// Points in the dense cloud (0 if only the sparse stage has run).
     points: u64,
     sparse_points: u64,
+    /// The textured surface model (model.glb) exists.
+    mesh: bool,
+    /// The surface model offset that maps viewer coordinates back to the
+    /// project frame (glTF x, y, z = east, up, −north, minus this offset).
+    mesh_offset: Option<[f64; 3]>,
     /// Changes when the model is rebuilt, so the viewer reloads it.
     version: u64,
 }
@@ -100,6 +105,20 @@ fn ply_count(path: &Path) -> Option<u64> {
     text.lines().find_map(|l| l.strip_prefix("element vertex ")?.trim().parse().ok())
 }
 
+/// Reads the recentring offset from the GLB's JSON chunk (asset.extras).
+fn mesh_offset(dir: &Path) -> Option<[f64; 3]> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(dir.join("model_view.glb")).ok()?;
+    let mut head = [0u8; 20];
+    f.read_exact(&mut head).ok()?;
+    let len = u32::from_le_bytes(head[12..16].try_into().ok()?) as usize;
+    let mut js = vec![0u8; len];
+    f.read_exact(&mut js).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&js).ok()?;
+    let e = &v["asset"]["extras"];
+    Some([e["local_offset"][0].as_f64()?, e["local_offset"][1].as_f64()?, e["local_offset"][2].as_f64()?])
+}
+
 fn model3d(p: &Project) -> Option<Model3d> {
     let dir = stitch_core::recon::out_dir(p);
     let sparse_points = ply_count(&dir.join("sparse.ply"))?;
@@ -110,7 +129,8 @@ fn model3d(p: &Project) -> Option<Model3d> {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    Some(Model3d { points: ply_count(&dense).unwrap_or(0), sparse_points, version })
+    let mesh = dir.join("model_view.glb").exists();
+    Some(Model3d { points: ply_count(&dense).unwrap_or(0), sparse_points, mesh, mesh_offset: mesh_offset(&dir), version })
 }
 
 fn view(p: &Project) -> ProjectView {
@@ -320,6 +340,7 @@ fn build_3d(app: AppHandle, state: State<AppState>, dir: String) -> CmdResult<()
             let s = stitch_core::recon::run_sparse(&p, &ctx)?;
             let (n, voxel) = stitch_core::recon::run_dense(&p, &ctx)?;
             stitch_core::recon::run_ortho(&p, &ctx)?;
+            stitch_core::recon::run_mesh(&p, &ctx)?;
             Ok((s, n, voxel))
         });
         let done = match result {
@@ -327,7 +348,7 @@ fn build_3d(app: AppHandle, state: State<AppState>, dir: String) -> CmdResult<()
                 kind: "3d",
                 ok: true,
                 message: format!(
-                    "3D model and true orthophoto ready: {} points from {} photos ({} angled)",
+                    "3D surface, point cloud and true orthophoto ready: {} points from {} photos ({} angled)",
                     n,
                     s.cameras.len(),
                     s.cameras.iter().filter(|c| c.oblique).count()
@@ -344,6 +365,27 @@ fn build_3d(app: AppHandle, state: State<AppState>, dir: String) -> CmdResult<()
         finish_job(&app, done);
     });
     Ok(())
+}
+
+#[tauri::command]
+fn measure_volume(
+    dir: String,
+    polygon: Vec<(f64, f64)>,
+    level: stitch_core::recon::measure::Level,
+) -> CmdResult<stitch_core::recon::measure::VolumeResult> {
+    let p = Project::open(Path::new(&dir)).map_err(anyerr)?;
+    let d = stitch_core::recon::dsm::Dsm::load(&stitch_core::recon::out_dir(&p).join("dsm.bin"))
+        .map_err(|_| "build the 3D model first: volume is measured on its surface".to_string())?;
+    stitch_core::recon::measure::volume(&d, &polygon, level)
+        .ok_or_else(|| "that outline doesn't cover any of the surface".to_string())
+}
+
+/// Copies the full-detail textured surface (GLB) out.
+#[tauri::command]
+fn export_model(dir: String, path: String) -> CmdResult<String> {
+    let p = Project::open(Path::new(&dir)).map_err(anyerr)?;
+    std::fs::copy(stitch_core::recon::out_dir(&p).join("model.glb"), &path).map_err(err)?;
+    Ok(path)
 }
 
 /// Copies the dense cloud (or the sparse one, if that's all there is) out.
@@ -487,7 +529,7 @@ fn serve_tile(app: &AppHandle, uri_path: &str) -> tauri::http::Response<Vec<u8>>
     let Some(dir) = app.state::<AppState>().current.lock().unwrap().clone() else { return not_found() };
     let parts: Vec<&str> = uri_path.trim_start_matches('/').split('/').collect();
     if let ["3d", name] = parts[..] {
-        if !matches!(name, "view.ply" | "dense.ply" | "sparse.ply") {
+        if !matches!(name, "view.ply" | "dense.ply" | "sparse.ply" | "model_view.glb") {
             return not_found();
         }
         return match std::fs::read(dir.join("result").join("3d").join(name)) {
@@ -536,6 +578,8 @@ pub fn run() {
             cancel_job,
             build_3d,
             export_cloud,
+            measure_volume,
+            export_model,
             recent_projects,
             plan_defaults,
             plan_flight,

@@ -5,7 +5,8 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { mountPlanner } from "./planner";
-import { mountViewer3D, Viewer3D } from "./viewer3d";
+import { mountViewer3D, MeasureEvent, Tool, Viewer3D } from "./viewer3d";
+import * as M from "./measure";
 import {
   api,
   ExportFormat,
@@ -16,6 +17,7 @@ import {
   RecentProject,
   Settings,
   SystemInfo,
+  VolumeLevel,
 } from "./api";
 
 const root = document.getElementById("app")!;
@@ -29,10 +31,30 @@ const state: {
   layer: MapLayer;
   progress: Progress | null;
   notice: { kind: "ok" | "error" | "info"; text: string } | null;
-} = { sys: null, project: null, recent: [], busy: null, tab: "map", layer: "ortho", progress: null, notice: null };
+  /** What the 3D tab shows when both exist. */
+  view3d: "surface" | "points";
+  tool: Tool;
+  volLevel: "lowest_edge" | "mean_edge" | "highest_edge" | "custom";
+  /** For a custom level: metres above the lowest point of the outline. */
+  volOffset: number;
+} = {
+  sys: null,
+  project: null,
+  recent: [],
+  busy: null,
+  tab: "map",
+  layer: "ortho",
+  progress: null,
+  notice: null,
+  view3d: "surface",
+  tool: "none",
+  volLevel: "lowest_edge",
+  volOffset: 0,
+};
 
 let map: L.Map | null = null;
 let viewer: Viewer3D | null = null;
+let mapMeasure: MapMeasure | null = null;
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -51,6 +73,10 @@ const STAGES: Record<string, string> = {
   "dense-prep": "Preparing photos for depth",
   depth: "Computing depth",
   fuse: "Building the point cloud",
+  dsm: "Building the surface",
+  visibility: "Working out what each photo sees",
+  ortho: "Drawing the true orthophoto",
+  mesh: "Texturing the 3D surface",
   done: "Finished",
 };
 
@@ -265,6 +291,7 @@ function mapPane(p: ProjectView, _m: ProjectView["manifest"]) {
   return m
     ? `<div id="map"></div>
        ${layerSwitch(p)}
+       ${measurePanel(false, layer === "ortho")}
        <div class="map-info">
          ${layer === "ortho" ? "<b>True orthophoto</b> · " : ""}
          ${fmtPixels(m.width, m.height)} · ${fmtGsd(m.gsd, m.epsg != null)} · ${m.photos} photos
@@ -282,22 +309,246 @@ function view3dPane(p: ProjectView) {
   if (!m3) {
     return `<div class="empty">
       <div class="empty-icon">◬</div>
-      <p>Build a 3D point cloud of the site from your photos.</p>
+      <p>Build a 3D model of the site from your photos.</p>
       <p class="dim small" style="max-width:440px;text-align:center;line-height:1.5">
         Uses every photo — angled ones included, which give walls and tree sides their shape.
         It takes longer than the 2D map: roughly a few seconds per photo.</p>
       <button class="primary" data-action="build3d" ${p.photos.length < 3 || state.busy ? "disabled" : ""}>Build 3D model</button>
     </div>`;
   }
+  const surface = showSurface(p);
   return `<div id="view3d"></div>
+    ${
+      m3.mesh
+        ? `<div class="layer-switch">
+             <button class="${surface ? "on" : ""}" data-action="v3d-surface" title="Solid surface textured from the photos">Surface</button>
+             <button class="${surface ? "" : "on"}" data-action="v3d-points" title="The raw point cloud">Points</button>
+           </div>`
+        : ""
+    }
+    ${measurePanel(true, !!p.ortho)}
     <div class="map-info">
       <span id="v3d-status">${(m3.points || m3.sparse_points).toLocaleString()} points</span>
       <span class="v3d-tools">
-        <label>Point size <input type="range" min="1" max="6" step="0.5" value="2" id="v3d-size" /></label>
+        ${surface ? "" : `<label>Point size <input type="range" min="1" max="6" step="0.5" value="2" id="v3d-size" /></label>`}
         <button class="small-btn" data-action="v3d-reset">Reset view</button>
+        ${m3.mesh ? `<button class="small-btn" data-action="export-model">Export 3D model…</button>` : ""}
         <button class="small-btn" data-action="export-cloud">Export point cloud…</button>
       </span>
     </div>`;
+}
+
+function showSurface(p: ProjectView) {
+  return !!p.model3d?.mesh && state.view3d === "surface";
+}
+
+// ────────────────────────────── Measuring ───────────────────────────────
+
+const TOOL_LABEL: Record<Exclude<Tool, "none">, string> = {
+  distance: "Distance",
+  height: "Height",
+  area: "Area",
+  volume: "Volume",
+};
+
+/** Floating measure toolbar + results. `is3d` adds height and true surface
+ *  measures; `volume` is offered only where the surface model is available. */
+function measurePanel(is3d: boolean, volume: boolean) {
+  const tools = (["distance", "height", "area", "volume"] as const).filter(
+    (t) => (t !== "height" || is3d) && (t !== "volume" || volume),
+  );
+  if (state.tool !== "none" && !(tools as readonly Tool[]).includes(state.tool)) state.tool = "none";
+  return `<div class="measure" id="measure">
+    <div class="mtools">
+      <span class="dim small">Measure</span>
+      ${tools
+        .map(
+          (t) =>
+            `<button class="${state.tool === t ? "on" : ""}" data-tool="${t}">${TOOL_LABEL[t]}</button>`,
+        )
+        .join("")}
+    </div>
+    <div id="measure-out" class="mout" ${state.tool === "none" ? "hidden" : ""}>${measureHint(state.tool, is3d)}</div>
+  </div>`;
+}
+
+function measureHint(tool: Tool, is3d: boolean) {
+  switch (tool) {
+    case "distance":
+      return `<p class="hint">Click points along the line${is3d ? " on the model" : ""}. Double-click to finish.</p>`;
+    case "height":
+      return `<p class="hint">Click the foot of the wall (or the ground), then its top. Orbit round to the side first so both are in view.</p>`;
+    case "area":
+      return is3d
+        ? `<p class="hint">Click the corners of the face to measure — a roof plane, a wall, a field. Double-click to close it. Sloping faces give their true area.</p>`
+        : `<p class="hint">Click around the area. Double-click to close it.</p>`;
+    case "volume":
+      return `${volumeLevelControls()}<p class="hint">Click around the rim of the pond or hole (or the base of a stockpile), then double-click to close it.</p>`;
+    default:
+      return "";
+  }
+}
+
+function volumeLevelControls() {
+  const o = (v: string, label: string) => `<option value="${v}" ${state.volLevel === v ? "selected" : ""}>${label}</option>`;
+  return `<label class="vol-level">Fill level
+    <select id="vol-level">
+      ${o("lowest_edge", "Up to the lowest point of the rim (where it would spill)")}
+      ${o("mean_edge", "Average height of the rim")}
+      ${o("highest_edge", "Up to the highest point of the rim")}
+      ${o("custom", "Custom: metres above the lowest point of the rim")}
+    </select>
+  </label>
+  <label class="vol-level" ${state.volLevel === "custom" ? "" : "hidden"} id="vol-offset-row">Metres above the lowest rim point
+    <input type="number" step="0.1" id="vol-offset" value="${state.volOffset}" />
+  </label>`;
+}
+
+/** The last finished outline, kept so changing the level re-measures it. */
+let lastOutline: [number, number][] | null = null;
+let volumeSeq = 0;
+
+function setTool(t: Tool) {
+  state.tool = state.tool === t ? "none" : t;
+  lastOutline = null;
+  document.querySelectorAll<HTMLElement>("#measure [data-tool]").forEach((b) => {
+    b.classList.toggle("on", b.dataset.tool === state.tool);
+  });
+  const out = document.getElementById("measure-out");
+  if (out) {
+    out.hidden = state.tool === "none";
+    out.innerHTML = measureHint(state.tool, state.tab === "3d");
+  }
+  viewer?.setTool(state.tool);
+  mapMeasure?.setTool(state.tool);
+}
+
+function showMeasure(e: MeasureEvent, is3d: boolean) {
+  const out = document.getElementById("measure-out");
+  if (!out || e.tool === "none") return;
+  const pts = e.points;
+  let body = "";
+  if (e.tool === "distance") {
+    const d = M.distance(pts);
+    body = d ? M.distanceHtml(d, is3d) : "";
+  } else if (e.tool === "height") {
+    const h = M.height(pts);
+    body = h ? M.heightHtml(h) : "";
+  } else if (e.tool === "area") {
+    const a = M.area(pts);
+    body = a ? M.areaHtml(a, is3d) : "";
+  } else if (e.tool === "volume") {
+    if (e.finished && pts.length >= 3) {
+      lastOutline = pts.map((p) => [p[0], p[1]]);
+      out.innerHTML = `${volumeLevelControls()}<div id="vol-result"><p class="hint">Measuring…</p></div>`;
+      void runVolume();
+      return;
+    }
+    lastOutline = null;
+    const a = M.area(pts);
+    body = a ? M.areaHtml(a, false) : "";
+  }
+  const done = e.finished
+    ? `<p class="hint">Click again to start a new measurement.</p>`
+    : pts.length
+      ? `<div class="row end"><button class="small-btn" data-action="measure-clear">Clear</button>${
+          e.tool !== "height" ? `<button class="small-btn primary" data-action="measure-finish">Finish</button>` : ""
+        }</div>`
+      : "";
+  out.innerHTML = (pts.length ? body : measureHint(e.tool, is3d)) + done;
+}
+
+async function runVolume() {
+  const p = state.project;
+  const poly = lastOutline;
+  const target = document.getElementById("vol-result");
+  if (!p || !poly || !target) return;
+  const seq = ++volumeSeq;
+  try {
+    let level: VolumeLevel = { kind: state.volLevel === "custom" ? "lowest_edge" : state.volLevel };
+    let r = await api.measureVolume(p.dir, poly, level);
+    if (state.volLevel === "custom") {
+      level = { kind: "height", z: r.level_z + state.volOffset };
+      r = await api.measureVolume(p.dir, poly, level);
+    }
+    if (seq !== volumeSeq) return;
+    const el = document.getElementById("vol-result");
+    if (el) el.innerHTML = M.volumeHtml(r) + `<p class="hint">Click again to start a new outline.</p>`;
+  } catch (err) {
+    if (seq !== volumeSeq) return;
+    const el = document.getElementById("vol-result");
+    if (el) el.innerHTML = `<p class="hint error">${esc(String(err))}</p>`;
+  }
+}
+
+/** Measuring on the 2D map. Points are in the map's metric frame; on the true
+ *  orthophoto that is the 3D model's frame, so volume can use the surface. */
+class MapMeasure {
+  private tool: Tool = "none";
+  private pts: L.LatLng[] = [];
+  private finished = false;
+  private layer = L.layerGroup();
+  constructor(
+    private map: L.Map,
+    private m: NonNullable<ProjectView["manifest"]>,
+  ) {
+    this.layer.addTo(map);
+    map.on("click", (e: L.LeafletMouseEvent) => this.click(e.latlng));
+    map.on("dblclick", () => this.finish());
+  }
+  /** Map point → metres (east, north; y up). */
+  private metric(ll: L.LatLng): M.P3 {
+    const pt = this.map.project(ll, this.m.max_zoom);
+    return [this.m.left + pt.x * this.m.gsd, this.m.top - pt.y * this.m.gsd, 0];
+  }
+  setTool(t: Tool) {
+    this.tool = t;
+    this.clear();
+    if (t === "none") this.map.doubleClickZoom.enable();
+    else this.map.doubleClickZoom.disable();
+    this.map.getContainer().style.cursor = t === "none" ? "" : "crosshair";
+  }
+  clear() {
+    this.pts = [];
+    this.finished = false;
+    this.draw();
+    this.emit();
+  }
+  finish() {
+    if (this.tool === "none" || this.pts.length < 2) return;
+    if ((this.tool === "area" || this.tool === "volume") && this.pts.length < 3) return;
+    this.finished = true;
+    this.draw();
+    this.emit();
+  }
+  private click(ll: L.LatLng) {
+    if (this.tool === "none") return;
+    if (this.finished) {
+      this.pts = [];
+      this.finished = false;
+    }
+    // The two clicks of a double-click land on the same spot: keep one.
+    const last = this.pts[this.pts.length - 1];
+    if (last && this.map.latLngToContainerPoint(last).distanceTo(this.map.latLngToContainerPoint(ll)) < 4) return;
+    this.pts.push(ll);
+    this.draw();
+    this.emit();
+  }
+  private draw() {
+    this.layer.clearLayers();
+    const style = { color: "#ffd23f", weight: 2, interactive: false };
+    const closed = (this.tool === "area" || this.tool === "volume") && this.pts.length > 2;
+    if (closed) L.polygon(this.pts, { ...style, fillOpacity: 0.15 }).addTo(this.layer);
+    else if (this.pts.length > 1) L.polyline(this.pts, style).addTo(this.layer);
+    for (const p of this.pts) {
+      L.circleMarker(p, { radius: 4, color: "#ffd23f", fillColor: "#ffd23f", fillOpacity: 1, interactive: false }).addTo(
+        this.layer,
+      );
+    }
+  }
+  private emit() {
+    showMeasure({ tool: this.tool, points: this.pts.map((p) => this.metric(p)), finished: this.finished }, false);
+  }
 }
 
 function exportDialog(p: ProjectView) {
@@ -348,6 +599,7 @@ function render() {
     viewer.dispose();
     viewer = null;
   }
+  mapMeasure = null;
   root.innerHTML = (p ? projectView(p) : homeView()) + (p && modal === "export" ? exportDialog(p) : "") + notice;
   if (p) {
     drawTrack(p);
@@ -360,12 +612,25 @@ function mount3d(p: ProjectView) {
   const el = document.getElementById("view3d");
   const m3 = p.model3d!;
   if (!el) return;
-  // The viewer loads a lighter copy; "Export point cloud" saves the full one.
-  const file = m3.points ? "view.ply" : "sparse.ply";
   const status = document.getElementById("v3d-status");
-  viewer = mountViewer3D(el, `${tileBase()}3d/${file}?v=${m3.version}`, (t) => {
+  const onStatus = (t: string) => {
     if (status) status.textContent = t;
-  });
+  };
+  const onMeasure = (e: MeasureEvent) => showMeasure(e, true);
+  if (showSurface(p)) {
+    viewer = mountViewer3D(el, {
+      url: `${tileBase()}3d/model_view.glb?v=${m3.version}`,
+      kind: "glb",
+      offset: m3.mesh_offset ?? [0, 0, 0],
+      onStatus,
+      onMeasure,
+    });
+  } else {
+    // The viewer loads a lighter copy; "Export point cloud" saves the full one.
+    const file = m3.points ? "view.ply" : "sparse.ply";
+    viewer = mountViewer3D(el, { url: `${tileBase()}3d/${file}?v=${m3.version}`, kind: "ply", onStatus, onMeasure });
+  }
+  viewer.setTool(state.tool);
   document.getElementById("v3d-size")?.addEventListener("input", (e) => {
     viewer?.setPointSize(Number((e.target as HTMLInputElement).value));
   });
@@ -436,6 +701,9 @@ function mountMap(p: ProjectView) {
     const north = m.utm_top - pt.y * m.gsd;
     cursor.textContent = ` · E ${east.toFixed(1)}  N ${north.toFixed(1)}`;
   });
+
+  mapMeasure = new MapMeasure(map, m);
+  mapMeasure.setTool(state.tool);
 }
 
 /** Photo positions from GPS, as a quick sanity check of the survey shape. */
@@ -515,9 +783,13 @@ async function addPaths(paths: string[]) {
   notify("info", "Reading photos…");
   const r = await api.addPhotos(p.dir, paths);
   state.project = r.project;
+  const dupes = r.failed.filter(([, why]) => why.startsWith("skipped")).length;
+  const unreadable = r.failed.length - dupes;
   notify(
-    r.failed.length ? "error" : "ok",
-    `Added ${r.added.toLocaleString()} photos` + (r.failed.length ? ` · ${r.failed.length} couldn't be read` : ""),
+    unreadable ? "error" : "ok",
+    `Added ${r.added.toLocaleString()} photos` +
+      (dupes ? ` · ${dupes} already in the project, skipped` : "") +
+      (unreadable ? ` · ${unreadable} couldn't be read` : ""),
   );
 }
 
@@ -579,10 +851,37 @@ async function onAction(action: string) {
       return render();
     case "tab-map":
       state.tab = "map";
+      state.tool = "none";
       return render();
     case "tab-3d":
       state.tab = "3d";
+      state.tool = "none";
       return render();
+    case "v3d-surface":
+      state.view3d = "surface";
+      return render();
+    case "v3d-points":
+      state.view3d = "points";
+      return render();
+    case "measure-clear":
+      viewer?.clearMeasure();
+      mapMeasure?.clear();
+      return;
+    case "measure-finish":
+      viewer?.finishMeasure();
+      mapMeasure?.finish();
+      return;
+    case "export-model": {
+      if (!p) return;
+      const path = await save({
+        title: "Save 3D model",
+        defaultPath: `${p.name}.glb`,
+        filters: [{ name: "3D model (glTF binary)", extensions: ["glb"] }],
+      });
+      if (!path) return;
+      await api.exportModel(p.dir, path);
+      return toast("ok", "3D model saved — opens in Blender, Windows 3D Viewer and most web 3D tools");
+    }
     case "build3d":
       if (!p) return;
       state.busy = "3d";
@@ -602,7 +901,7 @@ async function onAction(action: string) {
       });
       if (!path) return;
       await api.exportCloud(p.dir, path);
-      return notify("ok", "Point cloud saved — opens in CloudCompare, MeshLab or Blender");
+      return toast("ok", "Point cloud saved — opens in CloudCompare, MeshLab or Blender");
     }
     case "export":
       modal = "export";
@@ -637,6 +936,8 @@ root.addEventListener("click", (e) => {
     if (a.classList.contains("modal-back") && t !== a) return;
     return void guard(() => onAction(a.dataset.action!));
   }
+  const toolBtn = t.closest<HTMLElement>("[data-tool]");
+  if (toolBtn) return setTool(toolBtn.dataset.tool as Tool);
   const openBtn = t.closest<HTMLElement>("[data-open]");
   if (openBtn) return void guard(() => openProject(openBtn.dataset.open!));
   const rm = t.closest<HTMLElement>("[data-remove]");
@@ -651,6 +952,18 @@ root.addEventListener("click", (e) => {
 
 root.addEventListener("change", (e) => {
   const t = e.target as HTMLInputElement | HTMLSelectElement;
+  if (t.id === "vol-level" || t.id === "vol-offset") {
+    if (t.id === "vol-level") state.volLevel = t.value as typeof state.volLevel;
+    else state.volOffset = Number(t.value) || 0;
+    const row = document.getElementById("vol-offset-row");
+    if (row) row.hidden = state.volLevel !== "custom";
+    if (lastOutline) {
+      const r = document.getElementById("vol-result");
+      if (r) r.innerHTML = `<p class="hint">Measuring…</p>`;
+      void runVolume();
+    }
+    return;
+  }
   const key = t.dataset.setting as keyof Settings | undefined;
   const p = state.project;
   if (!key || !p) return;

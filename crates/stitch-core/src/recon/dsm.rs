@@ -8,10 +8,9 @@
 use super::ply::read_ply;
 use crate::profile::{Profile, ProfileKind};
 use anyhow::{bail, Result};
-use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct Dsm {
     /// World coordinate of the south-west corner of cell (0, 0).
     pub x0: f64,
@@ -25,6 +24,43 @@ pub struct Dsm {
 }
 
 impl Dsm {
+    /// Binary save: JSON can't carry NaN (it becomes null), and NaN is how an
+    /// empty cell is marked.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        let mut b = Vec::with_capacity(48 + self.h.len() * 4);
+        b.extend_from_slice(b"DSM1");
+        for v in [self.x0, self.y0, self.cell] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.extend_from_slice(&(self.nx as u64).to_le_bytes());
+        b.extend_from_slice(&(self.ny as u64).to_le_bytes());
+        b.extend_from_slice(&self.zmax.to_le_bytes());
+        for v in &self.h {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, b)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    pub fn load(path: &Path) -> Result<Dsm> {
+        let b = std::fs::read(path)?;
+        if b.len() < 48 || &b[..4] != b"DSM1" {
+            bail!("damaged surface model file");
+        }
+        let f64_at = |o: usize| f64::from_le_bytes(b[o..o + 8].try_into().unwrap());
+        let (x0, y0, cell) = (f64_at(4), f64_at(12), f64_at(20));
+        let nx = u64::from_le_bytes(b[28..36].try_into()?) as usize;
+        let ny = u64::from_le_bytes(b[36..44].try_into()?) as usize;
+        let zmax = f32::from_le_bytes(b[44..48].try_into()?);
+        if b.len() != 48 + nx * ny * 4 {
+            bail!("truncated surface model file");
+        }
+        let h = b[48..].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+        Ok(Dsm { x0, y0, cell, nx, ny, h, zmax })
+    }
+
     #[inline]
     pub fn at(&self, i: usize, j: usize) -> f32 {
         self.h[j * self.nx + i]
@@ -311,6 +347,11 @@ mod tests {
         d.h[0] = f32::NAN;
         assert!(d.height(0.5, 0.5).is_some()); // falls back to valid neighbours
         assert!(d.height(-3.0, 0.0).is_none());
+        let p = std::env::temp_dir().join(format!("dsm{}.bin", std::process::id()));
+        d.save(&p).unwrap();
+        let e = Dsm::load(&p).unwrap();
+        assert!(e.h[0].is_nan() && e.h[4] == 12.0 && e.nx == 3 && e.cell == 1.0);
+        std::fs::remove_file(p).ok();
     }
 
     #[test]

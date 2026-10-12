@@ -13,9 +13,20 @@ No uploads, no accounts, no image limits.
 - **Local projects.** A project is a folder. Close it, reopen it, add more
   photos — earlier work is cached, so only the new photos are processed.
 - **Exports:** GeoTIFF (any size), PNG, JPEG, each with a world file.
+- **Your photos stay where they are.** A project only *references* photo
+  files — nothing is copied. Adding the same photo twice (same file under
+  another path, or a copy in another folder) is detected and skipped.
 - **3D model.** Builds a coloured 3D point cloud of the site from the same
-  photos — angled shots included — with a built-in 3D viewer and PLY export
-  (CloudCompare, MeshLab, Blender).
+  photos — angled shots included — then a solid **textured surface**, with a
+  built-in 3D viewer and PLY / GLB export (CloudCompare, MeshLab, Blender,
+  Windows 3D Viewer).
+- **True orthophoto.** The 2D map re-projected onto the 3D surface, so roofs
+  sit over their footprints instead of leaning.
+- **Measuring.** On the 2D map: distance and area. On the 3D model: distance
+  along the surface (with height change and slope), the **height of a wall**,
+  and the **true area of a sloping roof or wall face**. **Volume** on either:
+  outline a pond and it tells you how much water fills it (m³ and litres) to
+  its rim or any level you choose — or how much material is in a stockpile.
 - **Flight planner.** Draw the area (or import a KML/KMZ from Google Earth),
   pick the drone and height, and it lays out a mapping grid with the right
   overlap, then exports **Litchi CSV** missions (split at Litchi's 99-waypoint
@@ -54,6 +65,20 @@ run: choose **More info → Run anyway**.
    block is then fitted onto the GPS positions (UTM metres, north up).
 5. **Render** — 512 px JPEG tiles plus a zoom pyramid; the viewer and
    exports read those tiles.
+
+### Disk space
+
+Measured on a 77-photo, 18 MP survey (518 MB of photos):
+
+| What | Size | Notes |
+|---|---|---|
+| 2D map tiles | ~50 MB | |
+| 3D results | ~125 MB | point cloud 63 MB, surface model 39 MB (+25 MB lighter viewer copy) |
+| True orthophoto | ~20 MB | |
+| Caches | ~230 MB | features, matches, depth maps — deletable; they only make re-runs fast |
+
+Photos are never copied. The 3D stage makes shrunk working copies of each
+photo while it runs and deletes them when it finishes.
 
 This produces a flat 2D mosaic, not a survey-grade orthophoto: there's no
 terrain model, so tall objects lean and hilly ground may show small seams.

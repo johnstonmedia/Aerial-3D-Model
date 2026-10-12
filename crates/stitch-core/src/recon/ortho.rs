@@ -61,14 +61,14 @@ pub(crate) fn visible(dsm: &Dsm, p: &V3, c: &V3) -> bool {
 
 /// How centrally (0 at the edge, 1 at the middle) a pixel sits in a photo.
 #[inline]
-pub(crate) fn centredness(u: &Vector2<f64>, w: f64, h: f64) -> f64 {
+pub fn centredness(u: &Vector2<f64>, w: f64, h: f64) -> f64 {
     let dx = (u.x.min(w - u.x) / (w / 2.0)).max(0.0);
     let dy = (u.y.min(h - u.y) / (h / 2.0)).max(0.0);
     dx * dy
 }
 
 /// Buckets of cameras by the ground they can see, for fast candidate lookup.
-pub(crate) struct CamIndex {
+pub struct CamIndex {
     x0: f64,
     y0: f64,
     size: f64,
@@ -78,7 +78,7 @@ pub(crate) struct CamIndex {
 }
 
 impl CamIndex {
-    pub(crate) fn new(sp: &Sparse, dsm: &Dsm) -> Self {
+    pub fn new(sp: &Sparse, dsm: &Dsm) -> Self {
         let size = 20.0f64.max(dsm.cell * 8.0);
         let (x0, y0) = (dsm.x0, dsm.y0);
         let nx = ((dsm.nx as f64 * dsm.cell) / size).ceil() as usize + 1;
@@ -116,7 +116,7 @@ impl CamIndex {
         Self { x0, y0, size, nx, ny, cells }
     }
 
-    pub(crate) fn near(&self, x: f64, y: f64) -> &[u32] {
+    pub fn near(&self, x: f64, y: f64) -> &[u32] {
         let i = ((x - self.x0) / self.size).floor();
         let j = ((y - self.y0) / self.size).floor();
         if i < 0.0 || j < 0.0 || i >= self.nx as f64 || j >= self.ny as f64 {

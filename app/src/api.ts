@@ -69,7 +69,33 @@ export interface ProjectView {
   /** True orthophoto (built with the 3D model). */
   ortho: Manifest | null;
   ortho_levels: LevelInfo[];
-  model3d: { points: number; sparse_points: number; version: number } | null;
+  model3d: {
+    points: number;
+    sparse_points: number;
+    /** A textured surface model (model_view.glb) exists. */
+    mesh: boolean;
+    /** glTF → project frame offset of the surface model. */
+    mesh_offset: [number, number, number] | null;
+    version: number;
+  } | null;
+}
+
+/** The water/fill level a volume is measured against. */
+export type VolumeLevel =
+  | { kind: "lowest_edge" }
+  | { kind: "mean_edge" }
+  | { kind: "highest_edge" }
+  | { kind: "height"; z: number };
+
+export interface VolumeResult {
+  area_m2: number;
+  surface_area_m2: number;
+  level_z: number;
+  fill_m3: number;
+  cut_m3: number;
+  min_z: number;
+  max_z: number;
+  missing_fraction: number;
 }
 
 export interface RecentProject {
@@ -110,6 +136,10 @@ export const api = {
   cancel: () => invoke<void>("cancel_job"),
   build3d: (dir: string) => invoke<void>("build_3d", { dir }),
   exportCloud: (dir: string, path: string) => invoke<string>("export_cloud", { dir, path }),
+  exportModel: (dir: string, path: string) => invoke<string>("export_model", { dir, path }),
+  /** Outline in the 3D model's frame (east, north metres). */
+  measureVolume: (dir: string, polygon: [number, number][], level: VolumeLevel) =>
+    invoke<VolumeResult>("measure_volume", { dir, polygon, level }),
 };
 
 // ─────────────── Flight planner ───────────────

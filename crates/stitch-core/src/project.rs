@@ -158,11 +158,16 @@ impl Project {
                 files.push(p.clone());
             }
         }
+        // Photos are referenced where they are, never copied. Canonical paths
+        // stop the same file sneaking in twice under different spellings
+        // (relative/absolute, a symlinked folder, different case on Windows).
+        let canon = |p: &Path| canonical(p);
+        let mut files: Vec<PathBuf> = files.iter().map(|f| canon(f)).collect();
         files.sort();
-        let existing: std::collections::HashSet<PathBuf> =
-            self.file.photos.iter().map(|p| p.path.clone()).collect();
-        files.retain(|f| !existing.contains(f));
         files.dedup();
+        let existing: std::collections::HashSet<PathBuf> =
+            self.file.photos.iter().map(|p| canon(&p.path)).collect();
+        files.retain(|f| !existing.contains(f));
 
         use rayon::prelude::*;
         let read: Vec<(PathBuf, Result<(String, PhotoMeta)>)> = files
@@ -174,9 +179,16 @@ impl Project {
             .collect();
         let mut added = 0;
         let mut failed = Vec::new();
+        // The same photo copied to another folder has the same fingerprint
+        // (name, size, modified time): keep the one already in the project.
+        let mut keys: std::collections::HashSet<String> = self.file.photos.iter().map(|p| p.key.clone()).collect();
         for (path, r) in read {
             match r {
+                Ok((key, _)) if keys.contains(&key) => {
+                    failed.push((path, "skipped: the same photo is already in the project".to_string()));
+                }
                 Ok((key, meta)) => {
+                    keys.insert(key.clone());
                     let id = self.file.next_id;
                     self.file.next_id += 1;
                     self.file.photos.push(PhotoEntry { id, path, key, meta, enabled: true });
@@ -212,6 +224,22 @@ impl Project {
         self.save()?;
         Ok(missing)
     }
+}
+
+/// Absolute, symlink-free path, without Windows' `\\?\` verbatim prefix
+/// (which some tools can't open) unless it's genuinely needed.
+fn canonical(p: &Path) -> PathBuf {
+    let c = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    #[cfg(windows)]
+    {
+        let s = c.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            if !rest.starts_with("UNC\\") && rest.len() < 260 {
+                return PathBuf::from(rest);
+            }
+        }
+    }
+    c
 }
 
 fn collect_dir(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {

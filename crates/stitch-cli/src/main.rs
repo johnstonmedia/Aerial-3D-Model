@@ -74,6 +74,39 @@ fn main() -> Result<()> {
             let m = stitch_core::recon::run_ortho(&project, &ctx)?;
             println!("true ortho {}x{} gsd={:.4} took {:.1}s", m.width, m.height, m.gsd, t.elapsed().as_secs_f64());
         }
+        Some("mesh") if args.len() >= 2 => {
+            let project = Project::open(&PathBuf::from(&args[1]))?;
+            let t = std::time::Instant::now();
+            let m = stitch_core::recon::run_mesh(&project, &ctx)?;
+            println!(
+                "mesh vertices={} triangles={} walls={} (from oblique {}) took {:.1}s",
+                m.vertices, m.triangles, m.wall_triangles, m.walls_from_oblique, t.elapsed().as_secs_f64()
+            );
+        }
+        Some("volume") if args.len() >= 3 => {
+            // volume <project> "x,y x,y x,y ..." [lowest|mean|highest|<height m>]
+            // Outline in the 3D model's frame (as the true ortho shows it).
+            let project = Project::open(&PathBuf::from(&args[1]))?;
+            let poly: Vec<(f64, f64)> = args[2]
+                .split_whitespace()
+                .filter_map(|p| {
+                    let (x, y) = p.split_once(',')?;
+                    Some((x.parse().ok()?, y.parse().ok()?))
+                })
+                .collect();
+            use stitch_core::recon::measure::{volume, Level};
+            let level = match args.get(3).map(String::as_str) {
+                None | Some("lowest") => Level::LowestEdge,
+                Some("mean") => Level::MeanEdge,
+                Some("highest") => Level::HighestEdge,
+                Some(z) => Level::Height { z: z.parse()? },
+            };
+            let dsm = stitch_core::recon::dsm::Dsm::load(&stitch_core::recon::out_dir(&project).join("dsm.bin"))?;
+            match volume(&dsm, &poly, level) {
+                Some(r) => println!("{}", serde_json::to_string_pretty(&r)?),
+                None => anyhow::bail!("the outline doesn't cover the surface"),
+            }
+        }
         Some("plan") => {
             // Reads a PlanInput as JSON on stdin, prints the Plan as JSON;
             // with an output folder, also writes the Litchi CSVs and KML.
@@ -92,7 +125,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string(&p)?);
         }
         _ => {
-            eprintln!("usage:\n  aerial-stitch process <project-dir> [photos-or-folders ...]\n  aerial-stitch export <project-dir> <out.tif|.png|.jpg> [zoom]\n  aerial-stitch plan [out-dir] < plan.json");
+            eprintln!("usage:\n  aerial-stitch process <project-dir> [photos-or-folders ...]\n  aerial-stitch export <project-dir> <out.tif|.png|.jpg> [zoom]\n  aerial-stitch plan [out-dir] < plan.json\n  aerial-stitch sparse|dense|ortho|mesh <project-dir>\n  aerial-stitch volume <project-dir> \"x,y x,y x,y\" [lowest|mean|highest|<height>]");
             std::process::exit(2);
         }
     }
