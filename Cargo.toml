@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = ["crates/stitch-core", "crates/stitch-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rayon = "1.10"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+
+# Image decoding and feature extraction are hot loops; even debug builds of the
+# app are unusable without optimisation, so optimise dependencies in dev too.
+[profile.dev.package."*"]
+opt-level = 3
+[profile.dev.package.stitch-core]
+opt-level = 3

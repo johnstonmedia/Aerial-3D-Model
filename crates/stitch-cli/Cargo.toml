@@ -1,0 +1,13 @@
+[package]
+name = "stitch-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "aerial-stitch"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+stitch-core = { path = "../stitch-core" }
