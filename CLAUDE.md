@@ -64,6 +64,25 @@ Local-first drone-photo stitcher. Read README.md first.
   checklist tells the pilot how to restart mid-mission.
 - 99 waypoints per Litchi mission → plans split; `batteries` packs short
   missions onto one battery in order. Don't conflate missions with batteries.
+- **Auto planning (`Goal`)**: `Batteries{count}` / `Time{minutes}` bisect the
+  grid height between `min_alt_m` and `max_alt_m` for the LOWEST height whose
+  whole plan fits (cost falls monotonically with height); `plan.options` is
+  the trade-off at six heights + the chosen one. An impossible budget still
+  returns the max-height plan with the warning first. `Manual` = old
+  behaviour. All new `PlanInput` fields are `#[serde(default)]`, so old saved
+  plans load as manual.
+- **Edge ring** (`ring`): convex hull of the area, offset outward by
+  `alt / tan(tilt)` (45° → offset = height) so each photo's centre lands ON
+  the border; rounded corners; spacing from the oblique footprint width ×
+  (1 − front overlap); each waypoint's heading points at the nearest hull
+  point (inward). Litchi: heading column + tilt/settle/shoot actions.
+- **Overview** (`overview`): straight-down grid at `max_alt_m`, 40% overlap
+  (the least that still matches), 3 shots along the long axis if one photo
+  would do. Skipped, with a warning, when the grid is already within 1.3× of
+  that height — it would only repeat the grid.
+- Waypoints carry their own `alt_m`, `pitch_deg` and `leg`; the CSV and KML
+  use them (NOT `input.altitude_m`, which a budget goal overrides). Height
+  changes between legs are timed at 3 m/s.
 - Obstacle avoidance during Litchi missions is unconfirmed (forum reports
   conflict). The app tells the pilot not to rely on it.
 - Geometry: camera long side across the line, heading along it. Footprint =
@@ -137,6 +156,22 @@ Local-first drone-photo stitcher. Read README.md first.
   meaningless; it's for empty ponds, holes and stockpiles.
 - Measurement maths for the UI is in `app/src/measure.ts` (Newell area: true
   area of a tilted face + its plan area). CLI: `aerial-stitch volume`.
+
+## Projects and models (workspace.rs)
+- A PROJECT (site) is a folder with `aerialproject.json`; each MODEL is a
+  `models/<id>/` folder that is exactly the old single-project layout
+  (`project.json`, result/, cache/). Plans live in `plans/<id>.json`.
+- `Project` in project.rs is a MODEL; `Workspace` is the project. The UI
+  says "project" and "model"; `api.openProject` returns a `ProjectInfo`,
+  `api.openModel` the model view.
+- A folder from before (project.json at the top) opens as a project with
+  one model `dir: "."`, upgraded in place. Deleting that model only unlists
+  it — it IS the project folder.
+- `features` and `matches` caches are SHARED at `<project>/cache/` (keyed by
+  photo fingerprint + profile only). Dense/3D caches stay per model: depth
+  maps depend on that model's solved cameras.
+- `delete_model` removes only a folder under `<project>/models/` that holds
+  a project.json — never photos.
 
 ## Photos are never copied
 - A project stores photo PATHS. `add_photos` canonicalises paths and skips

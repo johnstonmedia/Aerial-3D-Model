@@ -59,9 +59,12 @@ export interface LevelInfo {
   gsd: number;
 }
 
+/** One model: a set of photos and everything made from them. */
 export interface ProjectView {
   dir: string;
   name: string;
+  project_dir: string | null;
+  project_name: string | null;
   photos: PhotoView[];
   settings: Settings;
   manifest: Manifest | null;
@@ -101,7 +104,34 @@ export interface VolumeResult {
 export interface RecentProject {
   dir: string;
   name: string;
+  models: number;
+}
+
+export interface ModelSummary {
+  id: string;
+  name: string;
+  dir: string;
   photos: number;
+  has_map: boolean;
+  has_ortho: boolean;
+  has_3d: boolean;
+}
+
+export interface PlanSummary {
+  id: string;
+  path: string;
+  name: string;
+  area_m2: number;
+  corners: number;
+  boundary: [number, number][];
+}
+
+/** A project (site): its models and saved flight plans. */
+export interface ProjectInfo {
+  dir: string;
+  name: string;
+  models: ModelSummary[];
+  plans: PlanSummary[];
 }
 
 export interface Progress {
@@ -124,8 +154,13 @@ export type MapLayer = "mosaic" | "ortho";
 export const api = {
   systemInfo: () => invoke<SystemInfo>("system_info"),
   recentProjects: () => invoke<RecentProject[]>("recent_projects"),
-  createProject: (dir: string, name: string) => invoke<ProjectView>("create_project", { dir, name }),
-  openProject: (dir: string) => invoke<ProjectView>("open_project", { dir }),
+  createProject: (dir: string, name: string) => invoke<ProjectInfo>("create_project", { dir, name }),
+  openProject: (dir: string) => invoke<ProjectInfo>("open_project", { dir }),
+  createModel: (project: string, name: string) => invoke<ProjectView>("create_model", { project, name }),
+  openModel: (dir: string) => invoke<ProjectView>("open_model", { dir }),
+  renameModel: (project: string, id: string, name: string) => invoke<ProjectInfo>("rename_model", { project, id, name }),
+  deleteModel: (project: string, id: string) => invoke<ProjectInfo>("delete_model", { project, id }),
+  deletePlan: (project: string, id: string) => invoke<ProjectInfo>("delete_project_plan", { project, id }),
   addPhotos: (dir: string, paths: string[]) =>
     invoke<{ added: number; failed: [string, string][]; project: ProjectView }>("add_photos", { dir, paths }),
   removePhotos: (dir: string, ids: number[]) => invoke<ProjectView>("remove_photos", { dir, ids }),
@@ -170,7 +205,15 @@ export interface PlanInput {
   battery_minutes: number;
   overshoot: number;
   shots: Shot[];
+  goal: Goal;
+  min_alt_m: number;
+  max_alt_m: number;
+  ring: boolean;
+  ring_pitch_deg: number;
+  overview: boolean;
 }
+
+export type Goal = { kind: "manual" } | { kind: "batteries"; count: number } | { kind: "time"; minutes: number };
 
 /** One photo at each waypoint: tilt (-90 = straight down) and direction
  *  relative to the flight line (0 forward, 90 right, 180 back, 270 left). */
@@ -182,7 +225,10 @@ export interface Shot {
 export interface Waypoint {
   lon: number;
   lat: number;
+  alt_m: number;
   heading: number;
+  pitch_deg: number;
+  leg: "grid" | "ring" | "overview";
   photo: boolean;
   photo_dist_m: number;
   first: boolean;
@@ -200,6 +246,7 @@ export interface Plan {
   missions: Mission[];
   stats: {
     area_m2: number;
+    altitude_m: number;
     gsd_cm: number;
     footprint_w_m: number;
     footprint_h_m: number;
@@ -209,12 +256,27 @@ export interface Plan {
     direction_deg: number;
     lines: number;
     photos: number;
+    grid_photos: number;
+    ring_photos: number;
+    ring_offset_m: number;
+    overview_photos: number;
+    overview_alt_m: number;
     distance_m: number;
     duration_s: number;
     missions: number;
     batteries: number;
   };
   warnings: string[];
+  options: HeightOption[];
+}
+
+export interface HeightOption {
+  altitude_m: number;
+  gsd_cm: number;
+  photos: number;
+  duration_s: number;
+  batteries: number;
+  fits: boolean;
 }
 
 export const planApi = {
@@ -224,4 +286,6 @@ export const planApi = {
   importBoundary: (path: string) => invoke<LonLat[]>("import_boundary", { path }),
   save: (path: string, input: PlanInput) => invoke<void>("save_plan", { path, input }),
   load: (path: string) => invoke<PlanInput>("load_plan", { path }),
+  saveToProject: (project: string, id: string | null, input: PlanInput) =>
+    invoke<string>("save_project_plan", { project, id, input }),
 };

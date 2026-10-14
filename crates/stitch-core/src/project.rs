@@ -154,7 +154,8 @@ impl Project {
     }
 
     pub fn cache_dir(&self, kind: &str) -> PathBuf {
-        self.dir.join("cache").join(kind)
+        crate::workspace::shared_cache(&self.dir, kind)
+            .unwrap_or_else(|| self.dir.join("cache").join(kind))
     }
 
     pub fn result_dir(&self) -> PathBuf {

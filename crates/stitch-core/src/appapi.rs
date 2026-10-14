@@ -8,9 +8,12 @@
 //! desktop app rather than a look-alike.
 
 use crate::export::{export, levels, ExportOptions, Format, LevelInfo};
-use crate::plan::{camera_presets, litchi_csv, parse_kml_boundary, plan, plan_kml, Camera, Plan, PlanInput};
+use crate::plan::{
+    camera_presets, litchi_csv, parse_kml_boundary, plan, plan_kml, Camera, Plan, PlanInput,
+};
 use crate::project::Settings;
 use crate::render::{read_layer_manifest, read_manifest, Layer, Manifest};
+use crate::workspace::Workspace;
 use crate::{Ctx, ProfileKind, Project};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -30,10 +33,14 @@ pub struct PhotoView {
     pub missing: bool,
 }
 
+/// One model: a set of photos and everything made from them.
 #[derive(Serialize)]
 pub struct ProjectView {
     pub dir: String,
     pub name: String,
+    /// The project (site) this model belongs to.
+    pub project_dir: Option<String>,
+    pub project_name: Option<String>,
     pub photos: Vec<PhotoView>,
     pub settings: Settings,
     pub manifest: Option<Manifest>,
@@ -64,7 +71,8 @@ fn ply_count(path: &Path) -> Option<u64> {
     let mut head = vec![0u8; 1024];
     let n = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
     let text = String::from_utf8_lossy(&head[..n]);
-    text.lines().find_map(|l| l.strip_prefix("element vertex ")?.trim().parse().ok())
+    text.lines()
+        .find_map(|l| l.strip_prefix("element vertex ")?.trim().parse().ok())
 }
 
 /// Reads the recentring offset from the GLB's JSON chunk (asset.extras).
@@ -78,7 +86,11 @@ fn mesh_offset(dir: &Path) -> Option<[f64; 3]> {
     f.read_exact(&mut js).ok()?;
     let v: Value = serde_json::from_slice(&js).ok()?;
     let e = &v["asset"]["extras"];
-    Some([e["local_offset"][0].as_f64()?, e["local_offset"][1].as_f64()?, e["local_offset"][2].as_f64()?])
+    Some([
+        e["local_offset"][0].as_f64()?,
+        e["local_offset"][1].as_f64()?,
+        e["local_offset"][2].as_f64()?,
+    ])
 }
 
 fn model3d(p: &Project) -> Option<Model3d> {
@@ -94,22 +106,35 @@ fn model3d(p: &Project) -> Option<Model3d> {
         // sorts is still needed so the viewer reloads after a rebuild.
         .unwrap_or_else(|| ply_count(&dense).unwrap_or(0) ^ sparse_points);
     let mesh = dir.join("model_view.glb").exists();
-    Some(Model3d { points: ply_count(&dense).unwrap_or(0), sparse_points, mesh, mesh_offset: mesh_offset(&dir), version })
+    Some(Model3d {
+        points: ply_count(&dense).unwrap_or(0),
+        sparse_points,
+        mesh,
+        mesh_offset: mesh_offset(&dir),
+        version,
+    })
 }
 
 pub fn view(p: &Project) -> ProjectView {
     let manifest = read_manifest(p).ok();
     let ortho = read_layer_manifest(p, Layer::Ortho).ok();
+    let ws = Workspace::of_model(&p.dir).and_then(|d| Workspace::open(&d).ok());
     ProjectView {
         dir: p.dir.to_string_lossy().into_owned(),
         name: p.file.name.clone(),
+        project_dir: ws.as_ref().map(|w| w.dir.to_string_lossy().into_owned()),
+        project_name: ws.as_ref().map(|w| w.file.name.clone()),
         photos: p
             .file
             .photos
             .iter()
             .map(|ph| PhotoView {
                 id: ph.id,
-                name: ph.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                name: ph
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
                 path: ph.path.to_string_lossy().into_owned(),
                 lat: ph.meta.lat,
                 lon: ph.meta.lon,
@@ -128,14 +153,121 @@ pub fn view(p: &Project) -> ProjectView {
     }
 }
 
-pub fn create_project(dir: &Path, name: &str) -> Result<ProjectView> {
-    Ok(view(&Project::create(dir, name)?))
+// ─────────────────────────────── Projects ───────────────────────────────
+
+#[derive(Serialize)]
+pub struct ModelSummary {
+    pub id: String,
+    pub name: String,
+    pub dir: String,
+    pub photos: usize,
+    pub has_map: bool,
+    pub has_ortho: bool,
+    pub has_3d: bool,
 }
 
-pub fn open_project(dir: &Path) -> Result<ProjectView> {
+#[derive(Serialize)]
+pub struct PlanSummary {
+    pub id: String,
+    pub path: String,
+    pub name: String,
+    pub area_m2: f64,
+    pub corners: usize,
+    pub boundary: Vec<(f64, f64)>,
+}
+
+/// A project (site): its models and its saved flight plans.
+#[derive(Serialize)]
+pub struct ProjectInfo {
+    pub dir: String,
+    pub name: String,
+    pub models: Vec<ModelSummary>,
+    pub plans: Vec<PlanSummary>,
+}
+
+pub fn project_info(w: &Workspace) -> ProjectInfo {
+    let models = w
+        .file
+        .models
+        .iter()
+        .map(|m| {
+            let dir = w.model_dir(m);
+            let p = Project::open(&dir).ok();
+            ModelSummary {
+                id: m.id.clone(),
+                name: m.name.clone(),
+                dir: dir.to_string_lossy().into_owned(),
+                photos: p.as_ref().map_or(0, |p| p.file.photos.len()),
+                has_map: dir.join("result/manifest.json").exists(),
+                has_ortho: dir.join("result/ortho/manifest.json").exists(),
+                has_3d: dir.join("result/3d/sparse.ply").exists(),
+            }
+        })
+        .collect();
+    let plans = w
+        .plans()
+        .into_iter()
+        .map(|(id, path, input)| PlanSummary {
+            id,
+            path: path.to_string_lossy().into_owned(),
+            area_m2: crate::plan::boundary_area_m2(&input.boundary),
+            corners: input.boundary.len(),
+            name: input.name,
+            boundary: input.boundary,
+        })
+        .collect();
+    ProjectInfo {
+        dir: w.dir.to_string_lossy().into_owned(),
+        name: w.file.name.clone(),
+        models,
+        plans,
+    }
+}
+
+pub fn create_project(dir: &Path, name: &str) -> Result<ProjectInfo> {
+    Ok(project_info(&Workspace::create(dir, name)?))
+}
+
+/// Opens a project; a single-model folder from an earlier version opens as
+/// a project with that one model.
+pub fn open_project(dir: &Path) -> Result<ProjectInfo> {
+    Ok(project_info(&Workspace::open(dir)?))
+}
+
+/// Adds a model to a project and opens it.
+pub fn create_model(project: &Path, name: &str) -> Result<ProjectView> {
+    let mut w = Workspace::open(project)?;
+    let m = w.add_model(name)?;
+    Ok(view(&Project::open(&w.model_dir(&m))?))
+}
+
+pub fn open_model(dir: &Path) -> Result<ProjectView> {
     let mut p = Project::open(dir)?;
     p.refresh()?;
     Ok(view(&p))
+}
+
+pub fn rename_model(project: &Path, id: &str, name: &str) -> Result<ProjectInfo> {
+    let mut w = Workspace::open(project)?;
+    w.rename_model(id, name)?;
+    Ok(project_info(&w))
+}
+
+pub fn delete_model(project: &Path, id: &str) -> Result<ProjectInfo> {
+    let mut w = Workspace::open(project)?;
+    w.delete_model(id)?;
+    Ok(project_info(&w))
+}
+
+/// Saves a flight plan into the project; returns its id.
+pub fn save_project_plan(project: &Path, id: Option<&str>, input: &PlanInput) -> Result<String> {
+    Workspace::open(project)?.save_plan(id, input)
+}
+
+pub fn delete_project_plan(project: &Path, id: &str) -> Result<ProjectInfo> {
+    let w = Workspace::open(project)?;
+    w.delete_plan(id)?;
+    Ok(project_info(&w))
 }
 
 #[derive(Serialize)]
@@ -150,7 +282,10 @@ pub fn add_photos(dir: &Path, paths: &[PathBuf]) -> Result<AddResult> {
     let (added, failed) = p.add_photos(paths)?;
     Ok(AddResult {
         added,
-        failed: failed.into_iter().map(|(p, e)| (p.to_string_lossy().into_owned(), e)).collect(),
+        failed: failed
+            .into_iter()
+            .map(|(p, e)| (p.to_string_lossy().into_owned(), e))
+            .collect(),
         project: view(&p),
     })
 }
@@ -188,8 +323,17 @@ pub struct JobFinished {
 
 impl JobFinished {
     fn failed(kind: &'static str, e: anyhow::Error, ctx: &Ctx) -> Self {
-        let message = if ctx.cancelled() { "Cancelled".into() } else { format!("{e:#}") };
-        JobFinished { kind, ok: false, message, detail: Value::Null }
+        let message = if ctx.cancelled() {
+            "Cancelled".into()
+        } else {
+            format!("{e:#}")
+        };
+        JobFinished {
+            kind,
+            ok: false,
+            message,
+            detail: Value::Null,
+        }
     }
 }
 
@@ -199,7 +343,10 @@ pub fn process(dir: &Path, ctx: &Ctx) -> JobFinished {
             kind: "process",
             ok: true,
             message: if s.oblique_skipped > 0 {
-                format!("Placed {} of {} photos · {} angled photos skipped (kept for 3D)", s.placed, s.photos, s.oblique_skipped)
+                format!(
+                    "Placed {} of {} photos · {} angled photos skipped (kept for 3D)",
+                    s.placed, s.photos, s.oblique_skipped
+                )
             } else {
                 format!("Placed {} of {} photos", s.placed, s.photos)
             },
@@ -209,9 +356,25 @@ pub fn process(dir: &Path, ctx: &Ctx) -> JobFinished {
     }
 }
 
-pub fn export_map(dir: &Path, format: Format, layer: Option<Layer>, zoom: Option<u32>, path: &Path, ctx: &Ctx) -> JobFinished {
+pub fn export_map(
+    dir: &Path,
+    format: Format,
+    layer: Option<Layer>,
+    zoom: Option<u32>,
+    path: &Path,
+    ctx: &Ctx,
+) -> JobFinished {
     let result = Project::open(dir).and_then(|p| {
-        export(&p, &ExportOptions { format, layer: layer.unwrap_or_default(), zoom, path: path.to_path_buf() }, ctx)
+        export(
+            &p,
+            &ExportOptions {
+                format,
+                layer: layer.unwrap_or_default(),
+                zoom,
+                path: path.to_path_buf(),
+            },
+            ctx,
+        )
     });
     match result {
         Ok(out) => JobFinished {
@@ -259,7 +422,8 @@ pub fn measure_volume(
     let p = Project::open(dir)?;
     let d = crate::recon::dsm::Dsm::load(&crate::recon::out_dir(&p).join("dsm.bin"))
         .map_err(|_| anyhow!("build the 3D model first: volume is measured on its surface"))?;
-    crate::recon::measure::volume(&d, polygon, level).ok_or_else(|| anyhow!("that outline doesn't cover any of the surface"))
+    crate::recon::measure::volume(&d, polygon, level)
+        .ok_or_else(|| anyhow!("that outline doesn't cover any of the surface"))
 }
 
 /// Copies the full-detail textured surface (GLB) out.
@@ -273,7 +437,11 @@ pub fn export_model(dir: &Path, path: &Path) -> Result<String> {
 pub fn export_cloud(dir: &Path, path: &Path) -> Result<String> {
     let p = Project::open(dir)?;
     let d = crate::recon::out_dir(&p);
-    let src = if d.join("dense.ply").exists() { d.join("dense.ply") } else { d.join("sparse.ply") };
+    let src = if d.join("dense.ply").exists() {
+        d.join("dense.ply")
+    } else {
+        d.join("sparse.ply")
+    };
     std::fs::copy(&src, path)?;
     Ok(path.to_string_lossy().into_owned())
 }
@@ -289,7 +457,16 @@ pub fn plan_flight(input: &PlanInput) -> Result<Plan> {
 }
 
 fn safe_name(s: &str) -> String {
-    let t: String = s.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    let t: String = s
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
     if t.is_empty() {
         "survey".into()
     } else {
@@ -305,7 +482,11 @@ pub fn export_litchi(input: &PlanInput, dir: &Path) -> Result<Vec<String>> {
     let mut written = Vec::new();
     let n = p.missions.len();
     for (i, m) in p.missions.iter().enumerate() {
-        let file = if n == 1 { format!("{base}_litchi.csv") } else { format!("{base}_litchi_{}of{n}.csv", i + 1) };
+        let file = if n == 1 {
+            format!("{base}_litchi.csv")
+        } else {
+            format!("{base}_litchi_{}of{n}.csv", i + 1)
+        };
         let path = dir.join(file);
         std::fs::write(&path, litchi_csv(input, m, p.stats.speed_ms))?;
         written.push(path.to_string_lossy().into_owned());
@@ -319,7 +500,9 @@ pub fn export_litchi(input: &PlanInput, dir: &Path) -> Result<Vec<String>> {
 /// Boundary from a .kml, or the first .kml inside a .kmz.
 pub fn import_boundary(path: &Path) -> Result<Vec<(f64, f64)>> {
     let bytes = std::fs::read(path)?;
-    let is_kmz = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("kmz"));
+    let is_kmz = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("kmz"));
     let text = if is_kmz {
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
         let name = (0..zip.len())
@@ -355,7 +538,8 @@ pub struct Request {
 }
 
 fn arg<T: serde::de::DeserializeOwned>(args: &Value, name: &str) -> Result<T> {
-    serde_json::from_value(args.get(name).cloned().unwrap_or(Value::Null)).with_context(|| format!("argument `{name}`"))
+    serde_json::from_value(args.get(name).cloned().unwrap_or(Value::Null))
+        .with_context(|| format!("argument `{name}`"))
 }
 
 fn path_arg(args: &Value, name: &str) -> Result<PathBuf> {
@@ -367,13 +551,47 @@ fn path_arg(args: &Value, name: &str) -> Result<PathBuf> {
 pub fn dispatch(req: &Request, ctx: &Ctx) -> Result<Value> {
     let a = &req.args;
     let v = match req.cmd.as_str() {
-        "create_project" => json!(create_project(&path_arg(a, "dir")?, &arg::<String>(a, "name")?)?),
+        "create_project" => json!(create_project(
+            &path_arg(a, "dir")?,
+            &arg::<String>(a, "name")?
+        )?),
         "open_project" => json!(open_project(&path_arg(a, "dir")?)?),
+        "create_model" => json!(create_model(
+            &path_arg(a, "project")?,
+            &arg::<String>(a, "name")?
+        )?),
+        "open_model" => json!(open_model(&path_arg(a, "dir")?)?),
+        "rename_model" => {
+            json!(rename_model(
+                &path_arg(a, "project")?,
+                &arg::<String>(a, "id")?,
+                &arg::<String>(a, "name")?
+            )?)
+        }
+        "delete_model" => json!(delete_model(
+            &path_arg(a, "project")?,
+            &arg::<String>(a, "id")?
+        )?),
+        "save_project_plan" => json!(save_project_plan(
+            &path_arg(a, "project")?,
+            arg::<Option<String>>(a, "id")?.as_deref(),
+            &arg(a, "input")?
+        )?),
+        "delete_project_plan" => json!(delete_project_plan(
+            &path_arg(a, "project")?,
+            &arg::<String>(a, "id")?
+        )?),
         "add_photos" => {
-            let paths: Vec<PathBuf> = arg::<Vec<String>>(a, "paths")?.into_iter().map(PathBuf::from).collect();
+            let paths: Vec<PathBuf> = arg::<Vec<String>>(a, "paths")?
+                .into_iter()
+                .map(PathBuf::from)
+                .collect();
             json!(add_photos(&path_arg(a, "dir")?, &paths)?)
         }
-        "remove_photos" => json!(remove_photos(&path_arg(a, "dir")?, &arg::<Vec<u32>>(a, "ids")?)?),
+        "remove_photos" => json!(remove_photos(
+            &path_arg(a, "dir")?,
+            &arg::<Vec<u32>>(a, "ids")?
+        )?),
         "save_settings" => json!(save_settings(&path_arg(a, "dir")?, arg(a, "settings")?)?),
         "set_profile" => json!(set_profile(&path_arg(a, "dir")?, arg(a, "profile")?)?),
         "process" => json!(process(&path_arg(a, "dir")?, ctx)),
@@ -387,7 +605,11 @@ pub fn dispatch(req: &Request, ctx: &Ctx) -> Result<Value> {
         )),
         "build_3d" => json!(build_3d(&path_arg(a, "dir")?, ctx)),
         "measure_volume" => {
-            json!(measure_volume(&path_arg(a, "dir")?, &arg::<Vec<(f64, f64)>>(a, "polygon")?, arg(a, "level")?)?)
+            json!(measure_volume(
+                &path_arg(a, "dir")?,
+                &arg::<Vec<(f64, f64)>>(a, "polygon")?,
+                arg(a, "level")?
+            )?)
         }
         "export_model" => json!(export_model(&path_arg(a, "dir")?, &path_arg(a, "path")?)?),
         "export_cloud" => json!(export_cloud(&path_arg(a, "dir")?, &path_arg(a, "path")?)?),

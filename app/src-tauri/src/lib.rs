@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use stitch_core::export::Format;
 use stitch_core::project::Settings;
 use stitch_core::plan::{Camera, Plan, PlanInput};
-use stitch_core::{Ctx, Profile, ProfileKind, Project};
+use stitch_core::{Ctx, Profile, ProfileKind};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Default)]
@@ -54,27 +54,59 @@ fn system_info() -> SystemInfo {
     }
 }
 
-use stitch_core::appapi::{self, AddResult, JobFinished, ProjectView};
+use stitch_core::appapi::{self, AddResult, JobFinished, ProjectInfo, ProjectView};
 
-fn set_current(state: &AppState, app: &AppHandle, dir: &Path) {
+/// The model whose files `tiles://` serves.
+fn set_current(state: &AppState, dir: &Path) {
     *state.current.lock().unwrap() = Some(dir.to_path_buf());
-    remember_recent(app, dir);
 }
 
 #[tauri::command]
-fn create_project(app: AppHandle, state: State<AppState>, dir: String, name: String) -> CmdResult<ProjectView> {
-    let dir = PathBuf::from(dir);
-    let v = appapi::create_project(&dir, &name).map_err(anyerr)?;
-    set_current(&state, &app, &dir);
+fn create_project(app: AppHandle, dir: String, name: String) -> CmdResult<ProjectInfo> {
+    let v = appapi::create_project(Path::new(&dir), &name).map_err(anyerr)?;
+    remember_recent(&app, Path::new(&v.dir));
     Ok(v)
 }
 
 #[tauri::command]
-fn open_project(app: AppHandle, state: State<AppState>, dir: String) -> CmdResult<ProjectView> {
-    let dir = PathBuf::from(dir);
-    let v = appapi::open_project(&dir).map_err(anyerr)?;
-    set_current(&state, &app, &dir);
+fn open_project(app: AppHandle, dir: String) -> CmdResult<ProjectInfo> {
+    let v = appapi::open_project(Path::new(&dir)).map_err(anyerr)?;
+    remember_recent(&app, Path::new(&v.dir));
     Ok(v)
+}
+
+#[tauri::command]
+fn create_model(state: State<AppState>, project: String, name: String) -> CmdResult<ProjectView> {
+    let v = appapi::create_model(Path::new(&project), &name).map_err(anyerr)?;
+    set_current(&state, Path::new(&v.dir));
+    Ok(v)
+}
+
+#[tauri::command]
+fn open_model(state: State<AppState>, dir: String) -> CmdResult<ProjectView> {
+    let v = appapi::open_model(Path::new(&dir)).map_err(anyerr)?;
+    set_current(&state, Path::new(&dir));
+    Ok(v)
+}
+
+#[tauri::command]
+fn rename_model(project: String, id: String, name: String) -> CmdResult<ProjectInfo> {
+    appapi::rename_model(Path::new(&project), &id, &name).map_err(anyerr)
+}
+
+#[tauri::command]
+fn delete_model(project: String, id: String) -> CmdResult<ProjectInfo> {
+    appapi::delete_model(Path::new(&project), &id).map_err(anyerr)
+}
+
+#[tauri::command]
+fn save_project_plan(project: String, id: Option<String>, input: PlanInput) -> CmdResult<String> {
+    appapi::save_project_plan(Path::new(&project), id.as_deref(), &input).map_err(anyerr)
+}
+
+#[tauri::command]
+fn delete_project_plan(project: String, id: String) -> CmdResult<ProjectInfo> {
+    appapi::delete_project_plan(Path::new(&project), &id).map_err(anyerr)
 }
 
 #[tauri::command]
@@ -250,16 +282,19 @@ fn remember_recent(app: &AppHandle, dir: &Path) {
 struct RecentProject {
     dir: String,
     name: String,
-    photos: usize,
+    models: usize,
 }
 
 #[tauri::command]
 fn recent_projects(app: AppHandle) -> Vec<RecentProject> {
+    let mut seen = std::collections::HashSet::new();
     read_recent(&app)
         .into_iter()
         .filter_map(|d| {
-            let p = Project::open(Path::new(&d)).ok()?;
-            Some(RecentProject { dir: d, name: p.file.name.clone(), photos: p.file.photos.len() })
+            // Entries from before projects held models may name a model folder.
+            let w = stitch_core::workspace::Workspace::open(Path::new(&d)).ok()?;
+            let dir = w.dir.to_string_lossy().into_owned();
+            seen.insert(dir.clone()).then(|| RecentProject { dir, name: w.file.name.clone(), models: w.file.models.len() })
         })
         .collect()
 }
@@ -310,6 +345,12 @@ pub fn run() {
             system_info,
             create_project,
             open_project,
+            create_model,
+            open_model,
+            rename_model,
+            delete_model,
+            save_project_plan,
+            delete_project_plan,
             add_photos,
             remove_photos,
             save_settings,

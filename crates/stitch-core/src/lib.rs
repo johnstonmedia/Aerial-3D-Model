@@ -32,6 +32,7 @@ pub mod recon;
 pub mod render;
 pub mod sim;
 pub mod solve;
+pub mod workspace;
 
 pub use profile::{Profile, ProfileKind};
 pub use project::Project;

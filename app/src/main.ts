@@ -7,13 +7,16 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { mountPlanner } from "./planner";
 import { mountViewer3D, MeasureEvent, Tool, Viewer3D } from "./viewer3d";
 import * as M from "./measure";
+import { askConfirm, askText } from "./dialogs";
 import * as platform from "@platform";
 import {
   api,
+  planApi,
   ExportFormat,
   MapLayer,
   JobFinished,
   Progress,
+  ProjectInfo,
   ProjectView,
   RecentProject,
   Settings,
@@ -25,7 +28,9 @@ const root = document.getElementById("app")!;
 
 const state: {
   sys: SystemInfo | null;
-  project: ProjectView | null;
+  /** The open project (site), and the model open inside it. */
+  workspace: ProjectInfo | null;
+  model: ProjectView | null;
   recent: RecentProject[];
   busy: "process" | "export" | "3d" | null;
   tab: "map" | "3d";
@@ -40,7 +45,8 @@ const state: {
   volOffset: number;
 } = {
   sys: null,
-  project: null,
+  workspace: null,
+  model: null,
   recent: [],
   busy: null,
   tab: "map",
@@ -119,7 +125,7 @@ function homeView() {
     .map(
       (r) => `<button class="recent" data-open="${esc(r.dir)}">
         <span class="recent-name">${esc(r.name)}</span>
-        <span class="recent-meta">${r.photos} photos${platform.IS_WEB ? "" : ` · ${esc(r.dir)}`}</span>
+        <span class="recent-meta">${r.models} model${r.models === 1 ? "" : "s"}${platform.IS_WEB ? "" : ` · ${esc(r.dir)}`}</span>
       </button>`,
     )
     .join("");
@@ -151,7 +157,71 @@ function homeView() {
   </div>`;
 }
 
-// ──────────────────────────────── Project ───────────────────────────────
+// ──────────────────────────── Project (a site) ───────────────────────────
+
+const fmtArea = (m2: number) => (m2 >= 10000 ? `${(m2 / 10000).toFixed(2)} ha` : `${Math.round(m2).toLocaleString()} m²`);
+
+function workspaceView(w: ProjectInfo) {
+  const models = w.models
+    .map((m) => {
+      const made = [m.has_map ? "2D map" : "", m.has_ortho ? "true ortho" : "", m.has_3d ? "3D model" : ""].filter(Boolean);
+      return `<div class="card">
+        <button class="card-main" data-model="${esc(m.dir)}">
+          <span class="card-icon">${m.has_3d ? "◬" : m.has_map ? "⧉" : "▢"}</span>
+          <span class="card-name">${esc(m.name)}</span>
+          <span class="card-meta">${m.photos.toLocaleString()} photos · ${made.length ? made.join(", ") : "not processed yet"}</span>
+        </button>
+        <div class="card-actions">
+          <button class="icon" data-rename-model="${esc(m.id)}" title="Rename">✎</button>
+          <button class="icon" data-delete-model="${esc(m.id)}" title="Delete this model">🗑</button>
+        </div>
+      </div>`;
+    })
+    .join("");
+  const plans = w.plans
+    .map(
+      (p) => `<div class="card">
+        <button class="card-main" data-plan="${esc(p.id)}">
+          <span class="card-icon">✈</span>
+          <span class="card-name">${esc(p.name)}</span>
+          <span class="card-meta">${p.corners >= 3 ? `${fmtArea(p.area_m2)} area of focus` : "no area drawn yet"}</span>
+        </button>
+        <div class="card-actions">
+          <button class="icon" data-delete-plan="${esc(p.id)}" title="Delete this plan">🗑</button>
+        </div>
+      </div>`,
+    )
+    .join("");
+  return `
+  <div class="workspace">
+    <div class="ws-head">
+      <button class="icon" data-action="home" title="All projects">‹</button>
+      <div>
+        <h2>${esc(w.name)}</h2>
+        <div class="dim small">${platform.IS_WEB ? "Kept in this browser tab only" : esc(w.dir)}</div>
+      </div>
+    </div>
+    <section class="ws-section">
+      <div class="ws-section-head">
+        <h3>Flight plans</h3>
+        <button class="primary" data-action="plan-new">✈ Plan a flight</button>
+      </div>
+      <p class="hint">Draw the area to observe; the planner works out the route that fits your batteries or time.</p>
+      ${plans ? `<div class="cards">${plans}</div>` : ""}
+    </section>
+    <section class="ws-section">
+      <div class="ws-section-head">
+        <h3>Models</h3>
+        <button class="primary" data-action="new-model">+ New model</button>
+      </div>
+      <p class="hint">A model is one set of photos and the map and 3D model made from them — e.g. one per flight or per visit.
+        Photos are never copied, and models in a project share their photo analysis.</p>
+      ${models ? `<div class="cards">${models}</div>` : `<div class="empty small-empty"><p>No models yet — add one, then drop in your photos.</p></div>`}
+    </section>
+  </div>`;
+}
+
+// ──────────────────────────────── Model ─────────────────────────────────
 
 function photosPanel(p: ProjectView) {
   const gps = p.photos.filter((x) => x.lat != null).length;
@@ -251,10 +321,10 @@ function projectView(p: ProjectView) {
   <div class="layout">
     <aside>
       <div class="side-head">
-        <button class="icon" data-action="home" title="All projects">‹</button>
+        <button class="icon" data-action="to-project" title="Back to the project">‹</button>
         <div>
+          <div class="dim small">${esc(p.project_name ?? "")}</div>
           <div class="pname">${esc(p.name)}</div>
-          <div class="dim small" title="${esc(p.dir)}">${platform.IS_WEB ? "Kept in this browser tab only" : esc(p.dir)}</div>
         </div>
       </div>
       ${runPanel(p)}
@@ -464,7 +534,7 @@ function showMeasure(e: MeasureEvent, is3d: boolean) {
 }
 
 async function runVolume() {
-  const p = state.project;
+  const p = state.model;
   const poly = lastOutline;
   const target = document.getElementById("vol-result");
   if (!p || !poly || !target) return;
@@ -592,7 +662,7 @@ function exportDialog(p: ProjectView) {
 let modal: "export" | null = null;
 
 function render() {
-  const p = state.project;
+  const p = state.model;
   const notice = state.notice
     ? `<div class="notice ${state.notice.kind}">${esc(state.notice.text)}<button class="icon" data-action="dismiss">×</button></div>`
     : "";
@@ -605,7 +675,9 @@ function render() {
     viewer = null;
   }
   mapMeasure = null;
-  root.innerHTML = (p ? projectView(p) : homeView()) + (p && modal === "export" ? exportDialog(p) : "") + notice;
+  const w = state.workspace;
+  root.innerHTML =
+    (p ? projectView(p) : w ? workspaceView(w) : homeView()) + (p && modal === "export" ? exportDialog(p) : "") + notice;
   if (p) {
     drawTrack(p);
     if (state.tab === "map" && shownLayer(p).m) mountMap(p);
@@ -644,7 +716,7 @@ function mount3d(p: ProjectView) {
 
 /** Re-renders only the run panel, so progress updates don't rebuild the map. */
 function renderRun() {
-  const p = state.project;
+  const p = state.model;
   const panel = root.querySelector("aside .panel");
   if (!p || !panel) return render();
   panel.outerHTML = runPanel(p);
@@ -765,7 +837,8 @@ async function newProject() {
   const dir = await open({ directory: true, title: "Choose an empty folder for the new project" });
   if (typeof dir !== "string") return;
   const name = dir.split(/[\\/]/).filter(Boolean).pop() ?? "Project";
-  state.project = await api.createProject(dir, name);
+  state.workspace = await api.createProject(dir, name);
+  state.model = null;
   state.notice = null;
   render();
 }
@@ -773,8 +846,25 @@ async function newProject() {
 async function openProject(dir?: string) {
   const d = dir ?? (await open({ directory: true, title: "Open a project folder" }));
   if (typeof d !== "string") return;
-  state.project = await api.openProject(d);
+  state.workspace = await api.openProject(d);
+  state.model = null;
   state.notice = null;
+  render();
+}
+
+async function openModel(dir: string) {
+  state.model = await api.openModel(dir);
+  state.tab = "map";
+  state.tool = "none";
+  state.notice = null;
+  render();
+}
+
+/** Back to the project page, with its models' status refreshed. */
+async function toProject() {
+  const dir = state.model?.project_dir ?? state.workspace?.dir;
+  state.model = null;
+  state.workspace = dir ? await api.openProject(dir) : null;
   render();
 }
 
@@ -782,17 +872,38 @@ async function openProject(dir?: string) {
 async function loadSample() {
   const photos = await platform.samplePhotos((t) => toast("info", t));
   if (!photos.length) return;
-  state.project = await api.createProject(`/w/projects/${Date.now().toString(36)}/Sample survey`, "Sample survey");
+  state.workspace = await api.createProject(`/w/projects/${Date.now().toString(36)}/Sample survey`, "Sample survey");
+  state.model = await api.createModel(state.workspace.dir, "Aukerman Park photos");
   render();
   await addPaths(photos);
 }
 
+/** The flight planner, standalone or inside the open project. */
+async function openPlanner(planId: string | null) {
+  const w = state.workspace;
+  const plan = planId ? w?.plans.find((x) => x.id === planId) : null;
+  const input = plan ? await planApi.load(plan.path) : null;
+  // Its own container, so the planner's listeners leave with it.
+  const host = document.createElement("div");
+  host.style.height = "100%";
+  root.replaceChildren(host);
+  return mountPlanner(
+    host,
+    async () => {
+      if (state.workspace) state.workspace = await api.openProject(state.workspace.dir);
+      render();
+    },
+    toast,
+    w ? { project: w.dir, projectName: w.name, planId, input } : null,
+  );
+}
+
 async function addPaths(paths: string[]) {
-  const p = state.project;
+  const p = state.model;
   if (!p || !paths.length) return;
   notify("info", "Reading photos…");
   const r = await api.addPhotos(p.dir, paths);
-  state.project = r.project;
+  state.model = r.project;
   const dupes = r.failed.filter(([, why]) => why.startsWith("skipped")).length;
   const unreadable = r.failed.length - dupes;
   notify(
@@ -804,7 +915,7 @@ async function addPaths(paths: string[]) {
 }
 
 async function onAction(action: string) {
-  const p = state.project;
+  const p = state.model;
   switch (action) {
     case "new":
       return newProject();
@@ -812,23 +923,27 @@ async function onAction(action: string) {
       return openProject();
     case "sample":
       return loadSample();
-    case "planner": {
-      // Its own container, so the planner's listeners leave with it.
-      const host = document.createElement("div");
-      host.style.height = "100%";
-      root.replaceChildren(host);
-      return mountPlanner(
-        host,
-        () => {
-          render();
-        },
-        toast,
-      );
-    }
+    case "planner":
+      state.workspace = null;
+      return openPlanner(null);
+    case "plan-new":
+      return openPlanner(null);
     case "home":
-      state.project = null;
+      state.model = null;
+      state.workspace = null;
       state.recent = await api.recentProjects();
       return render();
+    case "to-project":
+      return toProject();
+    case "new-model": {
+      const w = state.workspace;
+      if (!w) return;
+      const name = await askText("New model", "Name", `Model ${w.models.length + 1}`, "Create");
+      if (!name) return;
+      state.model = await api.createModel(w.dir, name);
+      state.tab = "map";
+      return render();
+    }
     case "dismiss":
       state.notice = null;
       return render();
@@ -950,13 +1065,52 @@ root.addEventListener("click", (e) => {
   }
   const toolBtn = t.closest<HTMLElement>("[data-tool]");
   if (toolBtn) return setTool(toolBtn.dataset.tool as Tool);
+  const ws = state.workspace;
+  const pick = (attr: string) => t.closest<HTMLElement>(`[${attr}]`)?.getAttribute(attr) ?? null;
+  const modelDir = pick("data-model");
+  if (modelDir) return void guard(() => openModel(modelDir));
+  const planId = pick("data-plan");
+  if (planId) return void guard(() => openPlanner(planId));
+  const renameId = pick("data-rename-model");
+  if (renameId && ws) {
+    return void guard(async () => {
+      const cur = ws.models.find((m) => m.id === renameId);
+      const name = await askText("Rename model", "Name", cur?.name ?? "", "Rename");
+      if (!name) return;
+      state.workspace = await api.renameModel(ws.dir, renameId, name);
+      render();
+    });
+  }
+  const delModel = pick("data-delete-model");
+  if (delModel && ws) {
+    return void guard(async () => {
+      const cur = ws.models.find((m) => m.id === delModel);
+      const ok = await askConfirm(
+        `Delete “${cur?.name ?? "model"}”?`,
+        "Its map, 3D model and working files are deleted. Your photos are not touched — they stay wherever they are.",
+        "Delete model",
+      );
+      if (!ok) return;
+      state.workspace = await api.deleteModel(ws.dir, delModel);
+      render();
+    });
+  }
+  const delPlan = pick("data-delete-plan");
+  if (delPlan && ws) {
+    return void guard(async () => {
+      const cur = ws.plans.find((x) => x.id === delPlan);
+      if (!(await askConfirm(`Delete “${cur?.name ?? "plan"}”?`, "The saved flight plan is removed from this project.", "Delete plan"))) return;
+      state.workspace = await api.deletePlan(ws.dir, delPlan);
+      render();
+    });
+  }
   const openBtn = t.closest<HTMLElement>("[data-open]");
   if (openBtn) return void guard(() => openProject(openBtn.dataset.open!));
   const rm = t.closest<HTMLElement>("[data-remove]");
-  if (rm && state.project) {
+  if (rm && state.model) {
     const id = Number(rm.dataset.remove);
     return void guard(async () => {
-      state.project = await api.removePhotos(state.project!.dir, [id]);
+      state.model = await api.removePhotos(state.model!.dir, [id]);
       render();
     });
   }
@@ -977,14 +1131,14 @@ root.addEventListener("change", (e) => {
     return;
   }
   const key = t.dataset.setting as keyof Settings | undefined;
-  const p = state.project;
+  const p = state.model;
   if (!key || !p) return;
   const s: Settings = { ...p.settings };
   if (key === "output_scale") s.output_scale = Number(t.value);
   if (key === "neighbours") s.neighbours = Math.max(4, Math.min(40, Number(t.value) || 10));
   if (key === "profile") s.profile = (t.value || null) as Settings["profile"];
   void guard(async () => {
-    state.project = await api.saveSettings(p.dir, s);
+    state.model = await api.saveSettings(p.dir, s);
     notify("info", "Settings saved — they apply the next time you process.");
   });
 });
@@ -1000,26 +1154,27 @@ void listen<JobFinished>("job-finished", async (e) => {
   const r = e.payload;
   state.busy = null;
   state.progress = null;
-  if ((r.kind === "process" || r.kind === "3d") && state.project) {
-    state.project = await api.openProject(state.project.dir);
+  if ((r.kind === "process" || r.kind === "3d") && state.model) {
+    state.model = await api.openModel(state.model.dir);
   }
   notify(r.ok ? "ok" : "error", r.message);
 });
 
 void getCurrentWebview().onDragDropEvent((e) => {
-  if (e.payload.type === "drop" && state.project && !state.busy) {
+  if (e.payload.type === "drop" && state.model && !state.busy) {
     void guard(() => addPaths(e.payload.type === "drop" ? e.payload.paths : []));
   }
 });
 
 void listen("demo-reset", async () => {
-  state.project = null;
+  state.model = null;
+  state.workspace = null;
   state.recent = await api.recentProjects();
   render();
 });
 
 window.addEventListener("resize", () => {
-  if (state.project) drawTrack(state.project);
+  if (state.model) drawTrack(state.model);
 });
 
 void (async () => {

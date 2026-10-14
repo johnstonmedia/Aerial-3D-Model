@@ -10,8 +10,12 @@ No uploads, no accounts, no image limits.
   neighbours (fast, even for big surveys), and the finished map is placed in
   real-world coordinates (UTM), so a GeoTIFF export drops straight into QGIS,
   ArcGIS or Google Earth.
-- **Local projects.** A project is a folder. Close it, reopen it, add more
-  photos — earlier work is cached, so only the new photos are processed.
+- **Projects hold models.** A project is a folder for one site. Inside it
+  you keep any number of **models** (a set of photos and the map / 3D model
+  made from them — one per flight or visit, say) and the site's **flight
+  plans**. Models in a project share their photo analysis, so the same photo
+  in two models is only analysed once. Earlier work is cached, so adding
+  photos later only processes what's new.
 - **Exports:** GeoTIFF (any size), PNG, JPEG, each with a world file.
 - **Your photos stay where they are.** A project only *references* photo
   files — nothing is copied. Adding the same photo twice (same file under
@@ -27,11 +31,20 @@ No uploads, no accounts, no image limits.
   and the **true area of a sloping roof or wall face**. **Volume** on either:
   outline a pond and it tells you how much water fills it (m³ and litres) to
   its rim or any level you choose — or how much material is in a stockpile.
-- **Flight planner.** Draw the area (or import a KML/KMZ from Google Earth),
-  pick the drone and height, and it lays out a mapping grid with the right
-  overlap, then exports **Litchi CSV** missions (split at Litchi's 99-waypoint
-  limit) plus a KML of the route to check in Google Earth. Mavic Air 2 and
-  Air 2S presets built in.
+- **Flight planner.** Draw the area of focus (or import a KML/KMZ from Google
+  Earth) and say what you have — **a number of batteries, or minutes of
+  flying** — and it finds the **lowest height (sharpest photos) whose whole
+  flight fits**, showing the trade-off at other heights. Optional extra legs
+  for a complete 3D model:
+  - an **edge ring** just outside the area, with photos angled 45° looking
+    in at its border, set back exactly far enough that each photo is centred
+    on the border;
+  - an **overview**: the fewest straight-down photos from 120 m that cover
+    the whole area (at least three), to tie the detailed photos together.
+
+  Exports **Litchi CSV** missions (split at Litchi's 99-waypoint limit and
+  per battery) plus a KML to check in Google Earth. Plans save into the
+  project. Mavic Air 2 and Air 2S presets built in.
 
 ## Try it in your browser
 

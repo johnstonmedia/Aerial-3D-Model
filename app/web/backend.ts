@@ -55,7 +55,7 @@ export async function readFile(path: string): Promise<Blob | null> {
 }
 
 // ── Projects in this tab ──
-const projects = new Map<string, { name: string; photos: number }>();
+const projects = new Map<string, { name: string; models: number }>();
 let job: Promise<unknown> | null = null;
 
 /** Files the user asked to save; downloaded once a command has written them. */
@@ -105,7 +105,7 @@ export async function invoke(cmd: string, args: any = {}): Promise<any> {
         profile: LITE,
       };
     case "recent_projects":
-      return [...projects].map(([dir, p]) => ({ dir, name: p.name, photos: p.photos }));
+      return [...projects].map(([dir, p]) => ({ dir, name: p.name, models: p.models }));
     case "cancel_job":
       return cancel();
   }
@@ -132,10 +132,10 @@ export async function invoke(cmd: string, args: any = {}): Promise<any> {
       if (blob) saveBlob(blob, path.split("/").pop()!);
     }
   }
-  if (value && typeof value === "object" && "dir" in value && "photos" in value && Array.isArray(value.photos)) {
-    projects.set(value.dir, { name: value.name, photos: value.photos.length });
+  // Projects (sites) opened or changed in this tab make up its "recent" list.
+  if (value && typeof value === "object" && Array.isArray(value.models) && typeof value.dir === "string") {
+    projects.set(value.dir, { name: value.name, models: value.models.length });
   }
-  if (value?.project?.dir) projects.set(value.project.dir, { name: value.project.name, photos: value.project.photos.length });
   await flushDownloads();
   return value;
 }

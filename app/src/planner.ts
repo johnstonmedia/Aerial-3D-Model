@@ -2,7 +2,8 @@
 // the lawnmower grid, export Litchi CSV missions.
 import L from "leaflet";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { LonLat, Plan, PlanInput, Shot, planApi } from "./api";
+import { Goal, LonLat, Plan, PlanInput, Shot, planApi } from "./api";
+import { askConfirm } from "./dialogs";
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -44,9 +45,26 @@ const MISSION_COLORS = ["#36e0c0", "#ffb547", "#7aa2ff", "#ff7ab6", "#b6ff7a", "
 
 type Notify = (kind: "ok" | "error" | "info", text: string) => void;
 
-export async function mountPlanner(root: HTMLElement, onBack: () => void, notify: Notify) {
+/** Set when the planner is opened from a project: plans save into it. */
+export interface PlannerContext {
+  project: string;
+  projectName: string;
+  planId: string | null;
+  input: PlanInput | null;
+}
+
+const RING_COLOR = "#ff9f43";
+const OVERVIEW_COLOR = "#ffffff";
+
+export async function mountPlanner(root: HTMLElement, onBack: () => void, notify: Notify, ctx: PlannerContext | null = null) {
   const [defaults, cameras] = await planApi.defaults();
-  let input: PlanInput = { ...defaults };
+  // A new plan starts from the automatic planner: the best detail two
+  // batteries allow, with the edge ring and overview for a complete model.
+  let input: PlanInput = ctx?.input
+    ? { ...defaults, ...ctx.input }
+    : { ...defaults, goal: { kind: "batteries", count: 2 }, ring: true, overview: true };
+  let planId = ctx?.planId ?? null;
+  let dirty = false;
   let plan: Plan | null = null;
   let planError = "";
 
@@ -55,7 +73,7 @@ export async function mountPlanner(root: HTMLElement, onBack: () => void, notify
     <aside id="plan-side"></aside>
     <main>
       <div id="pmap"></div>
-      <div class="map-info" id="pmap-info">Click the map to mark the corners of the area to survey.</div>
+      <div class="map-info" id="pmap-info">Click the map to mark the corners of the area of focus.</div>
     </main>
   </div>`;
 
@@ -113,6 +131,7 @@ export async function mountPlanner(root: HTMLElement, onBack: () => void, notify
   // ───────── Planning ─────────
   let timer: number | undefined;
   function schedule() {
+    dirty = true;
     window.clearTimeout(timer);
     timer = window.setTimeout(replan, 150);
   }
@@ -137,12 +156,22 @@ export async function mountPlanner(root: HTMLElement, onBack: () => void, notify
     p.missions.forEach((m, i) => {
       const color = MISSION_COLORS[i % MISSION_COLORS.length];
       const pts = m.waypoints.map((w) => L.latLng(w.lat, w.lon));
-      L.polyline(pts, { color, weight: 2, opacity: 0.95, interactive: false }).addTo(routeLayer);
-      if (!manyPoints) {
-        for (const w of m.waypoints) {
-          if (w.photo) {
-            L.circleMarker([w.lat, w.lon], { radius: 2, color, weight: 1, fillOpacity: 1, interactive: false }).addTo(routeLayer);
-          }
+      L.polyline(pts, { color, weight: 2, opacity: 0.85, interactive: false }).addTo(routeLayer);
+      for (const w of m.waypoints) {
+        if (w.leg === "ring") {
+          // Each ring photo looks in at the area: draw where it's facing.
+          const reach = Math.max(8, p.stats.ring_offset_m * 0.6);
+          const h = (w.heading * Math.PI) / 180;
+          const dLat = (reach * Math.cos(h)) / 111320;
+          const dLon = (reach * Math.sin(h)) / (111320 * Math.cos((w.lat * Math.PI) / 180));
+          L.polyline([[w.lat, w.lon], [w.lat + dLat, w.lon + dLon]], { color: RING_COLOR, weight: 1.5, interactive: false }).addTo(routeLayer);
+          L.circleMarker([w.lat, w.lon], { radius: 3, color: RING_COLOR, weight: 1, fillOpacity: 1, interactive: false }).addTo(routeLayer);
+        } else if (w.leg === "overview") {
+          L.circleMarker([w.lat, w.lon], {
+            radius: 6, color: OVERVIEW_COLOR, weight: 2, fillColor: "#000", fillOpacity: 0.4, interactive: false,
+          }).addTo(routeLayer);
+        } else if (w.photo && !manyPoints) {
+          L.circleMarker([w.lat, w.lon], { radius: 2, color, weight: 1, fillOpacity: 1, interactive: false }).addTo(routeLayer);
         }
       }
       const start = m.waypoints[0];
@@ -193,6 +222,58 @@ export async function mountPlanner(root: HTMLElement, onBack: () => void, notify
       </div>`;
   }
 
+  function goalSection() {
+    const g = input.goal;
+    const s = plan?.stats;
+    const opts = plan?.options ?? [];
+    const table = g.kind !== "manual" && opts.length
+      ? `<table class="tradeoff">
+          <tr><th>Height</th><th>Detail</th><th>Photos</th><th>Time</th><th>Batt.</th></tr>
+          ${opts
+            .map((o) => `<tr class="${o.altitude_m === s?.altitude_m ? "chosen" : ""} ${o.fits ? "" : "nofit"}" data-alt="${o.altitude_m}"
+                title="Fly at ${o.altitude_m} m instead">
+              <td>${o.altitude_m} m</td><td>${o.gsd_cm.toFixed(1)} cm</td><td>${o.photos.toLocaleString()}</td>
+              <td>${fmtTime(o.duration_s)}</td><td>${o.batteries}</td></tr>`)
+            .join("")}
+        </table>
+        <p class="hint">Lower is sharper but needs more photos and time. Greyed rows don't fit your budget. Click a row to fly at that height yourself.</p>`
+      : "";
+    return `
+      <section class="panel">
+        <h3>Goal</h3>
+        <label>Plan the route for
+          <select data-f="goal">
+            <option value="batteries" ${g.kind === "batteries" ? "selected" : ""}>The best detail my batteries allow</option>
+            <option value="time" ${g.kind === "time" ? "selected" : ""}>The best detail in the time I have</option>
+            <option value="manual" ${g.kind === "manual" ? "selected" : ""}>A height I choose</option>
+          </select>
+        </label>
+        ${g.kind === "batteries"
+          ? `<label>Batteries <input type="number" min="1" max="30" value="${g.count}" data-f="goal_count" /></label>`
+          : g.kind === "time"
+            ? `<label>Minutes of flying <input type="number" min="3" max="600" value="${g.minutes}" data-f="goal_minutes" /></label>`
+            : ""}
+        ${g.kind !== "manual"
+          ? `<label>Lowest safe height — <b>${input.min_alt_m} m</b>
+               <input type="range" min="15" max="100" step="5" value="${input.min_alt_m}" data-f="min_alt_m" /></label>
+             <p class="hint">Clear of the tallest trees, poles and buildings in or around the area.</p>`
+          : ""}
+        <label>Highest allowed — <b>${input.max_alt_m} m</b>
+          <input type="range" min="40" max="120" step="5" value="${input.max_alt_m}" data-f="max_alt_m" /></label>
+        ${s && g.kind !== "manual"
+          ? `<div class="chosen-height">Flies at <b>${s.altitude_m.toFixed(0)} m</b> · ${s.gsd_cm.toFixed(1)} cm/px ·
+              ${s.batteries} batter${s.batteries === 1 ? "y" : "ies"} · ${fmtTime(s.duration_s)}</div>`
+          : ""}
+        ${table}
+        <label class="check"><input type="checkbox" data-f="ring" ${input.ring ? "checked" : ""} />
+          <span><b>Edge ring</b> — a loop just outside the area with photos angled 45° in at its border,
+          so the sides of the 3D model are complete.</span></label>
+        <label class="check"><input type="checkbox" data-f="overview" ${input.overview ? "checked" : ""} />
+          <span><b>Overview</b> — the fewest straight-down photos from ${input.max_alt_m} m that cover the whole
+          area, to help piece the model together.</span></label>
+      </section>`;
+  }
+
   function renderSide() {
     const side = document.getElementById("plan-side");
     if (!side) return;
@@ -203,28 +284,33 @@ export async function mountPlanner(root: HTMLElement, onBack: () => void, notify
     const pct = (v: number) => Math.round(v * 100);
     side.innerHTML = `
       <div class="side-head">
-        <button class="icon" data-p="back" title="Back">‹</button>
-        <div><div class="pname">Flight planner</div><div class="dim small">Plan a mapping flight for Litchi</div></div>
+        <button class="icon" data-p="back" title="${ctx ? "Back to the project" : "Back"}">‹</button>
+        <div>${ctx ? `<div class="dim small">${esc(ctx.projectName)}</div>` : ""}
+          <div class="pname">Flight planner</div><div class="dim small">Plan a mapping flight for Litchi</div></div>
       </div>
 
       <section class="panel">
         <label>Go to coordinates <input data-f="goto" placeholder="-33.8568, 151.2153" /></label>
-        <label>Survey name <input data-f="name" value="${esc(input.name)}" /></label>
+        <label>Plan name <input data-f="name" value="${esc(input.name)}" /></label>
         <div class="row">
           <button data-p="import">Import KML…</button>
           <button data-p="clear" ${input.boundary.length ? "" : "disabled"}>Clear area</button>
         </div>
         <p class="hint">${input.boundary.length < 3
-          ? `Click the map to add corners (${input.boundary.length} so far), or import a boundary drawn in Google Earth.`
+          ? `Click the map to mark the corners of the area of focus (${input.boundary.length} so far), or import a boundary drawn in Google Earth.`
           : `${input.boundary.length} corners. Drag to adjust, right-click a corner to delete it.`}</p>
       </section>
+
+      ${goalSection()}
 
       <section class="panel">
         <h3>Drone &amp; camera</h3>
         <label>Drone <select data-f="camera">${camOpts}</select></label>
-        <label>Height above take-off — <b>${input.altitude_m} m</b>${s ? ` · ${s.gsd_cm.toFixed(1)} cm/px` : ""}
-          <input type="range" min="20" max="120" step="5" value="${input.altitude_m}" data-f="altitude_m" />
-        </label>
+        ${input.goal.kind === "manual"
+          ? `<label>Height above take-off — <b>${input.altitude_m} m</b>${s ? ` · ${s.gsd_cm.toFixed(1)} cm/px` : ""}
+              <input type="range" min="20" max="120" step="5" value="${input.altitude_m}" data-f="altitude_m" />
+            </label>`
+          : ""}
         <label>Front overlap — <b>${pct(input.front_overlap)}%</b>
           <input type="range" min="50" max="90" step="5" value="${pct(input.front_overlap)}" data-f="front_overlap" />
         </label>
@@ -267,6 +353,7 @@ export async function mountPlanner(root: HTMLElement, onBack: () => void, notify
         <h3>Plan</h3>
         <div class="stats">
           <div><span>Area</span><b>${fmtArea(s.area_m2)}</b></div>
+          <div><span>Height</span><b>${s.altitude_m.toFixed(0)} m</b></div>
           <div><span>Detail</span><b>${s.gsd_cm.toFixed(1)} cm/px</b></div>
           <div><span>Photos</span><b>${s.photos.toLocaleString()}</b></div>
           <div><span>Flight time</span><b>${fmtTime(s.duration_s)}</b></div>
@@ -276,6 +363,11 @@ export async function mountPlanner(root: HTMLElement, onBack: () => void, notify
           <div><span>Line gap</span><b>${s.line_spacing_m.toFixed(0)} m</b></div>
           <div><span>Photo gap</span><b>${s.photo_spacing_m.toFixed(0)} m</b></div>
         </div>
+        ${s.ring_photos || s.overview_photos
+          ? `<p class="hint">${s.grid_photos.toLocaleString()} grid photos${
+              s.ring_photos ? ` · <span style="color:${RING_COLOR}">${s.ring_photos} edge-ring photos</span> ${s.ring_offset_m.toFixed(0)} m outside the area` : ""
+            }${s.overview_photos ? ` · ${s.overview_photos} overview photos from ${s.overview_alt_m.toFixed(0)} m` : ""}</p>`
+          : ""}
         ${plan!.missions.length > 1 && input.capture === "photo_at_waypoint"
           ? `<p class="hint">Litchi allows 99 waypoints per mission, so this plan is split into ${s.missions}. Short ones can be flown back-to-back on one battery.</p>`
           : ""}
@@ -292,9 +384,12 @@ export async function mountPlanner(root: HTMLElement, onBack: () => void, notify
 
       <section class="panel">
         <button class="primary wide" data-p="export" ${plan ? "" : "disabled"}>Export for Litchi…</button>
+        ${ctx
+          ? `<button class="wide" data-p="save-project" ${input.boundary.length ? "" : "disabled"}>${planId ? "Save changes" : "Save to project"}</button>`
+          : ""}
         <div class="row">
-          <button data-p="save" ${input.boundary.length ? "" : "disabled"}>Save plan…</button>
-          <button data-p="load">Open plan…</button>
+          <button data-p="save" ${input.boundary.length ? "" : "disabled"}>Save plan file…</button>
+          <button data-p="load">Open plan file…</button>
         </div>
         <details class="howto">
           <summary>How to fly it</summary>
@@ -311,7 +406,7 @@ export async function mountPlanner(root: HTMLElement, onBack: () => void, notify
             <li>If a battery runs low part-way, let it return home, note the <b>last waypoint it reached</b>, swap
                 the battery, reopen the same mission and choose <b>start from waypoint</b> — that number + 1.
                 Litchi for the Mavic Air 2 doesn't resume automatically.</li>
-            <li>Then drop all the photos into a new project.</li>
+            <li>Then make a new model in the project and drop all the photos into it.</li>
           </ol>
         </details>
       </section>`;
@@ -324,12 +419,13 @@ export async function mountPlanner(root: HTMLElement, onBack: () => void, notify
     if (!f || t.type !== "range") return;
     const v = Number(t.value);
     if (f === "front_overlap" || f === "side_overlap") input[f] = v / 100;
-    else if (f === "altitude_m" || f === "speed_ms" || f === "battery_minutes") input[f] = v;
+    else if (f === "altitude_m" || f === "speed_ms" || f === "battery_minutes" || f === "min_alt_m" || f === "max_alt_m") input[f] = v;
     else if (f === "direction_deg") input.direction_deg = v;
     // Update the label live without rebuilding the slider being dragged.
     const b = t.parentElement?.querySelector("b");
-    if (b) b.textContent = f.endsWith("overlap") ? `${t.value}%` : f === "direction_deg" ? `${t.value}°` : f === "altitude_m" ? `${t.value} m` : f === "speed_ms" ? `${t.value} m/s` : t.value;
+    if (b) b.textContent = f.endsWith("overlap") ? `${t.value}%` : f === "direction_deg" ? `${t.value}°` : f === "altitude_m" || f === "min_alt_m" || f === "max_alt_m" ? `${t.value} m` : f === "speed_ms" ? `${t.value} m/s` : t.value;
     window.clearTimeout(timer);
+    dirty = true;
     timer = window.setTimeout(async () => {
       routeLayer.clearLayers();
       try {
@@ -364,22 +460,53 @@ export async function mountPlanner(root: HTMLElement, onBack: () => void, notify
       else notify("error", "Enter coordinates as: latitude, longitude");
       return;
     }
-    if (f === "name") input.name = t.value || "Survey";
+    if (f === "goal") {
+      const g: Goal =
+        t.value === "batteries" ? { kind: "batteries", count: 2 }
+        : t.value === "time" ? { kind: "time", minutes: 30 }
+        : { kind: "manual" };
+      // Keep the height the planner chose when switching to manual.
+      if (g.kind === "manual" && plan) input.altitude_m = Math.round(plan.stats.altitude_m);
+      input.goal = g;
+    } else if (f === "goal_count") input.goal = { kind: "batteries", count: Math.max(1, Math.round(Number(t.value) || 1)) };
+    else if (f === "goal_minutes") input.goal = { kind: "time", minutes: Math.max(3, Number(t.value) || 30) };
+    else if (f === "ring" || f === "overview") input[f] = (t as HTMLInputElement).checked;
+    else if (f === "name") input.name = t.value || "Survey";
     else if (f === "camera") input.camera = cameras[Number(t.value)];
     else if (f === "direction_mode") input.direction_deg = t.value === "custom" ? 0 : null;
     else if (f === "capture") input.capture = t.value as PlanInput["capture"];
     else if (f === "altitude_mode") input.altitude_mode = t.value as PlanInput["altitude_mode"];
+    if (input.min_alt_m > input.max_alt_m) input.min_alt_m = input.max_alt_m;
+    dirty = true;
     void replan(); // sliders also land here on release, refreshing the stats
   });
 
   root.addEventListener("click", async (e) => {
+    const row = (e.target as HTMLElement).closest<HTMLElement>("[data-alt]");
+    if (row) {
+      input.goal = { kind: "manual" };
+      input.altitude_m = Number(row.dataset.alt);
+      dirty = true;
+      return void replan();
+    }
     const b = (e.target as HTMLElement).closest<HTMLElement>("[data-p]");
     if (!b) return;
     try {
       switch (b.dataset.p) {
         case "back":
+          if (
+            ctx && dirty && input.boundary.length &&
+            !(await askConfirm("Leave without saving?", "Changes to this plan haven't been saved to the project.", "Leave"))
+          ) return;
           map.remove();
           return onBack();
+        case "save-project": {
+          if (!ctx) return;
+          planId = await planApi.saveToProject(ctx.project, planId, input);
+          dirty = false;
+          renderSide();
+          return notify("ok", `Saved “${input.name}” to ${ctx.projectName}`);
+        }
         case "shot-add": {
           const last = input.shots[input.shots.length - 1];
           const next = last && last.pitch_deg !== -90
@@ -434,6 +561,10 @@ export async function mountPlanner(root: HTMLElement, onBack: () => void, notify
 
   renderSide();
   drawArea();
+  if (input.boundary.length >= 3) {
+    fitArea();
+    void replan();
+  }
   const Locate = L.Control.extend({
     onAdd() {
       const d = L.DomUtil.create("div", "leaflet-bar");
